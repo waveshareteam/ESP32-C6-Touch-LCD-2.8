@@ -1,0 +1,40 @@
+# ESP-IDF / CMake build outputs
+build/
+**/build/
+managed_components/
+**/managed_components/
+dependencies.lock
+compile_commands.json
+sdkconfig.old
+
+# Editor files
+.vscode/
+**/.vscode/
+.idea/
+.clangd
+__pycache__/
+.ci-output/
+release-artifacts/
+release-downloads/
+release-dist/
+.ci-template/
+.claude/
+.cursor/
+.codex/
+.gemini/
+.windsurf/
+.continue/
+.roo/
+.cline/
+.aider*
+
+# Generated binaries and link outputs
+*.elf
+*.map
+*.a
+*.o
+*.obj
+
+# OS files
+Thumbs.db
+.DS_Store

@@ -1,185 +1,105 @@
 <div align="center">
-
-# ESP32-C6-Touch-LCD-2.8
-
-**2.8-inch ESP32-C6 Wi-Fi 6 touch display development board**
-
-[![License](https://img.shields.io/github/license/waveshareteam/ESP32-C6-Touch-LCD-2.8)](./LICENSE)
-
-[中文](./README.cn.md) | English | [Product](https://www.waveshare.com/esp32-c6-touch-lcd-2.8.htm) | [Documentation](https://docs.waveshare.com/ESP32-C6-Touch-LCD-2.8/) | [Firmware](./Firmware/) | [ESP-IDF Examples](./example/ESP-IDF-V554/) | [Arduino Examples](./example/Arduino-v3.3.10/example/)
-
-<img src="./assets/ESP32-C6-Touch-LCD-2.8.png" alt="ESP32-C6-Touch-LCD-2.8" width="500">
-
+  <h1>ESP32-C6-Touch-LCD-2.8</h1>
+  <p><strong>2.8-inch 240 × 320 ESP32-C6 Wi-Fi 6 touch display development board</strong></p>
+  <p><strong>English</strong> | <a href="README_ZH.md">简体中文</a></p>
+  <p>
+    <a href="https://github.com/waveshareteam/ESP32-C6-Touch-LCD-2.8/actions/workflows/build.yml"><img alt="Build" src="https://github.com/waveshareteam/ESP32-C6-Touch-LCD-2.8/actions/workflows/build.yml/badge.svg"></a>
+    <a href="https://github.com/waveshareteam/ESP32-C6-Touch-LCD-2.8/releases/latest"><img alt="Latest Release" src="https://img.shields.io/github/v/release/waveshareteam/ESP32-C6-Touch-LCD-2.8"></a>
+    <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/waveshareteam/ESP32-C6-Touch-LCD-2.8"></a>
+  </p>
+  <p>
+    <a href="https://www.waveshare.com/ESP32-C6-Touch-LCD-2.8.htm">🌐 Product</a> &middot;
+    <a href="firmware/">📦 Firmware</a> &middot;
+    <a href="examples/esp-idf/">🧩 ESP-IDF</a> &middot;
+    <a href="examples/arduino/examples/">🔧 Arduino</a> &middot;
+    <a href="hardware/">📚 Documentation</a>
+  </p>
+  <p><img src="docs/images/ESP32-C6-Touch-LCD-2.8.png" alt="ESP32-C6-Touch-LCD-2.8 development board" width="500"></p>
 </div>
 
-## Overview
+---
 
-ESP32-C6-Touch-LCD-2.8 is a resource package for an ESP32-C6 based 2.8-inch touch LCD development board. This repository includes Arduino examples, ESP-IDF examples, factory firmware, schematics, mechanical files, SD card demo assets, and GUI Guider UI resources for quick hardware evaluation and application development.
+## ✨ Overview
 
-This package is intended for:
+Examples and hardware resources for the ESP32-C6 touch display board, including LCD, touch, audio, SD card and sensors. CH32V003 provides IO expansion and backlight PWM control.
 
-- Verifying ESP32-C6, LCD, touch, sensors, SD card, and audio functions.
-- Building touch LCD applications with Arduino or ESP-IDF.
-- Reusing BSP, LVGL examples, and GUI Guider projects for UI development.
-- Checking hardware schematics, mechanical dimensions, and factory firmware resources.
+| Feature | Device / interface |
+| --- | --- |
+| MCU | ESP32-C6 |
+| Memory | 16 MB Flash; no PSRAM |
+| Display | 2.8-inch ST7789 SPI LCD, 240 × 320 |
+| Touch | CST3530, I2C |
+| Audio | ES8311 codec and onboard microphone |
+| Sensors | QMI8658 IMU, PCF85063 RTC, SHTC3 temperature/humidity |
+| Expansion | CH32V003 IO expander, microSD over shared SPI |
+| Board support | [BSP and compatibility notes](docs/compatibility.md) |
 
-## Hardware Overview
+## 📦 Quick Start
 
-| Item | Description |
-| :--- | :--- |
-| MCU | ESP32-C6-WROOM-1 |
-| Wi-Fi | 2.4 GHz only; 5 GHz is not supported |
-| Display | 2.8-inch LCD, 240 x 320 resolution |
-| LCD driver | ST7789 |
-| Touch controller | CST3530, I2C address `0x58` |
-| IO expander | CH32V003, I2C address `0x24` |
-| Sensors | QMI8658 6-axis IMU, PCF85063 RTC, SHTC3 temperature and humidity sensor |
-| Storage assets | Micro SD card demo assets and SPIFFS audio demo |
-| UI framework | Arduino examples use LVGL v8.4.0; ESP-IDF examples use LVGL v9 |
-| Hardware files | [Schematic](./schematic/ESP32-C6-Touch-LCD-2.8.pdf), [dimensions](./dimensions/ESP32-C6-Touch-LCD-2.8.pdf), [DXF](./dimensions/ESP32-C6-Touch-LCD-2.8.dxf), and [STEP](./dimensions/ESP32-C6-Touch-LCD-2.8.stp) |
+1. Download and extract this repository, then connect the board with a USB data cable.
+2. To run the current desktop, follow the [ESP-IDF setup guide](docs/getting-started-idf.md) and open `examples/factory`.
+3. Run `idf.py build`, then `idf.py flash monitor`; the project already selects ESP32-C6 and 16 MB Flash.
+4. Follow the [factory user guide](examples/factory/USER_GUIDE.md) to connect **2.4 GHz Wi-Fi** and try the applications.
 
-> CH32V003 is used for IO expansion, LCD reset, touch reset, and backlight control. Its control firmware is pre-programmed at the factory. In normal use, only the ESP32-C6 application needs to be flashed.
+The preserved [original factory image](firmware/README.md) restores the previous demonstration.
 
-## Supported Toolchains
+## 🧪 Examples
 
-| Development framework | Version | Examples |
-| :--- | :--- | ---: |
-| Arduino-ESP32 | `3.3.10` | 6 |
+### ESP-IDF
+
+| Example | Main feature |
+| --- | --- |
+| [01_lvgl_demo](examples/esp-idf/01_lvgl_demo/) | LVGL widgets, touch and backlight |
+| [02_sd_card](examples/esp-idf/02_sd_card/) | SD write/read verification with LCD results |
+| [03_qmi8658](examples/esp-idf/03_qmi8658/) | Serial acceleration and angular velocity |
+| [04_pcf85063](examples/esp-idf/04_pcf85063/) | RTC set/read |
+| [05_shtc3](examples/esp-idf/05_shtc3/) | Serial temperature and humidity |
+| [06_exio](examples/esp-idf/06_exio/) | Header EXIO6/7 and backlight PWM |
+| [07_audio](examples/esp-idf/07_audio/) | Touchscreen microphone meter, 10 s recording and playback |
+| [08_battery_voltage](examples/esp-idf/08_battery_voltage/) | LCD/serial battery voltage and raw ADC |
+
+### Arduino
+
+| Example | Main feature |
+| --- | --- |
+| [01_exio](examples/arduino/examples/01_exio/) | CH32V003 IO expander |
+| [02_I2C_qmi8658](examples/arduino/examples/02_I2C_qmi8658/) | IMU readings |
+| [03_SD_Card](examples/arduino/examples/03_SD_Card/) | SD detection and capacity |
+| [04_I2C_pcf85063](examples/arduino/examples/04_I2C_pcf85063/) | RTC |
+| [05_shtc3](examples/arduino/examples/05_shtc3/) | Temperature and humidity |
+| [06_lvgl_demo](examples/arduino/examples/06_lvgl_demo/) | LCD, touch and backlight |
+| [07_battery_voltage](examples/arduino/examples/07_battery_voltage/) | Battery voltage and raw ADC |
+
+Libraries are bundled in [`examples/arduino/libraries`](examples/arduino/libraries/). Arduino uses LVGL 8.4; ESP-IDF and factory use LVGL 9.5.0.
+
+### Factory Demo
+
+The [factory project](examples/factory/) provides 12 applications: Display Test, Settings, AIChats, Touch Test, GravityBall, Photos, Weather, SD Music, Sensor, 2048, Mic Test and Button Test. AIChats runs inside the desktop firmware; see the [user guide](examples/factory/USER_GUIDE.md) for network setup, activation and application controls.
+
+## 🛠️ Development Environment
+
+The framework versions and board options are defined in [product.json](.github/product.json).
+
+| Framework | Version | Examples |
+| --- | --- | ---: |
 | ESP-IDF | `v5.5.4` | 8 |
+| ESP-IDF (factory project) | `v5.5.4` | 1 |
+| Arduino-ESP32 | `3.3.12` | 7 |
 
-## Hardware Resources
+For first use, follow the [ESP-IDF guide](docs/getting-started-idf.md) or [Arduino guide](docs/getting-started-arduino.md), then prepare the hardware, upload and operate the selected example as described in its README. Each example explains whether to check the screen, serial monitor or speaker for its results.
 
-| Resource | Download |
-| :--- | :--- |
-| Schematic | [ESP32-C6-Touch-LCD-2.8.pdf](./schematic/ESP32-C6-Touch-LCD-2.8.pdf) |
-| Mechanical drawing | [PDF](./dimensions/ESP32-C6-Touch-LCD-2.8.pdf) |
-| 2D drawing | [DXF](./dimensions/ESP32-C6-Touch-LCD-2.8.dxf) |
-| 3D model | [STEP](./dimensions/ESP32-C6-Touch-LCD-2.8.stp) |
+## 📚 Resources
 
-## Repository Layout
+- [Schematic](hardware/schematic/)
+- [Mechanical drawings and 3D model](hardware/mechanical/)
+- [Product page](https://www.waveshare.com/ESP32-C6-Touch-LCD-2.8.htm)
+- [Wiki](https://docs.waveshare.com/ESP32-C6-Touch-LCD-2.8)
 
-```text
-.
-├── dimensions/              # Mechanical files: PDF, DXF, STEP
-├── assets/                  # Product images used by the documentation
-├── example/
-│   ├── Arduino-v3.3.10/     # Arduino examples and bundled libraries
-│   └── ESP-IDF-V554/        # ESP-IDF v5.5.4 examples
-├── Firmware/                # Factory firmware
-├── guider_ui/               # GUI Guider installer / UI resources
-├── schematic/               # Schematic
-├── sdcard/                  # SD card test files, images, and audio assets
-├── LICENSE
-├── README.cn.md
-└── README.en.md
-```
+## 🤝 Support
 
-## Arduino Quick Start
+- Example or repository problem: [open an issue](https://github.com/waveshareteam/ESP32-C6-Touch-LCD-2.8/issues/new/choose).
+- Product usage, hardware or order questions: [Waveshare support](https://service.waveshare.com/).
 
-Recommended environment:
+## 📄 License
 
-- Arduino IDE
-- `esp32 by Espressif Systems v3.3.10`
-- Board selection: `ESP32C6 Dev Module`
-
-Steps:
-
-1. Install `esp32 by Espressif Systems v3.3.10` from Arduino IDE Boards Manager.
-2. Select `ESP32C6 Dev Module` from `Tools` > `Board`.
-3. Copy the bundled libraries to the Arduino libraries directory:
-
-   ```text
-   example/Arduino-v3.3.10/lib/lvgl
-   example/Arduino-v3.3.10/lib/SensorLib
-   ```
-
-   The default Arduino library directory on Windows is usually:
-
-   ```text
-   C:\Users\<UserName>\Documents\Arduino\libraries
-   ```
-
-4. Open an `.ino` example from `example/Arduino-v3.3.10/example`, then build and flash it.
-5. It is recommended to run `01_exio` first to verify the CH32V003 IO expander before testing LCD, touch, and sensor examples.
-
-### Arduino Examples
-
-| Example | Function |
-| :--- | :--- |
-| [01_exio](./example/Arduino-v3.3.10/example/01_exio/) | CH32V003 IO expander test |
-| [02_I2C_qmi8658](./example/Arduino-v3.3.10/example/02_I2C_qmi8658/) | QMI8658 6-axis IMU test |
-| [03_SD_Card](./example/Arduino-v3.3.10/example/03_SD_Card/) | SD card read/write test |
-| [04_I2C_pcf85063](./example/Arduino-v3.3.10/example/04_I2C_pcf85063/) | PCF85063 RTC test |
-| [05_shtc3](./example/Arduino-v3.3.10/example/05_shtc3/) | SHTC3 temperature and humidity sensor test |
-| [06_lvgl_demo](./example/Arduino-v3.3.10/example/06_lvgl_demo/) | LCD, touch, backlight, and LVGL basic UI test |
-
-## ESP-IDF Quick Start
-
-Recommended environment:
-
-- ESP-IDF v5.5.4
-- Target chip: `esp32c6`
-
-Enter any ESP-IDF example directory and run:
-
-```powershell
-idf.py set-target esp32c6
-idf.py build flash monitor
-```
-
-### ESP-IDF Examples
-
-| Example | Function |
-| :--- | :--- |
-| [01_ch32_test](./example/ESP-IDF-V554/01_ch32_test/) | CH32V003 IO expander test, mainly observed through serial logs |
-| [02_2048](./example/ESP-IDF-V554/02_2048/) | LVGL-based 2048 touch mini game |
-| [03_sd_lvgl](./example/ESP-IDF-V554/03_sd_lvgl/) | SD card text reading and LVGL display |
-| [04_sd_music](./example/ESP-IDF-V554/04_sd_music/) | MP3 playback from SD card |
-| [05_spiff_music](./example/ESP-IDF-V554/05_spiff_music/) | MP3 music player demo using SPIFFS assets |
-| [06_wifi_weather](./example/ESP-IDF-V554/06_wifi_weather/) | Wi-Fi weather demo |
-| [07_Ball_qmi](./example/ESP-IDF-V554/07_Ball_qmi/) | QMI8658 motion-controlled ball demo |
-| [08_bookesia](./example/ESP-IDF-V554/08_bookesia/) | Brookesia / drawing-board style touch application demo |
-
-## SD Card Assets
-
-The `sdcard/` directory contains test files, images, and audio assets used by the examples. For SD-card-related demos:
-
-- Use a Micro SD card of 64 GB or smaller.
-- Format the card as FAT32.
-- Copy the files from `sdcard/` to the SD card root as required by each example.
-- `04_sd_music` requires a `music` folder and `.mp3` files in the SD card root.
-
-## Factory Firmware
-
-- [Download the factory firmware](./Firmware/ESP32-C6-Touch-LCD-2.8-FactoryApp.bin)
-- Refer to the [product documentation](https://docs.waveshare.com/ESP32-C6-Touch-LCD-2.8/) for the verified flashing procedure and flash settings.
-
-It can be used to restore or verify the factory demo. Before flashing it, make sure the serial port, target chip, and flash settings are correct.
-
-## Development Notes
-
-- For common UI changes, start from the application layer, LVGL pages, GUI Guider generated code, or example business logic.
-- Avoid changing BSP, low-level drivers, pin definitions, or partition tables unless the hardware connection or board design has changed.
-- If LCD or touch does not work, verify CH32V003 communication first.
-- The Arduino `06_lvgl_demo` example already adapts ST7789 and CST3530, so an extra GFX display library or third-party touch library is usually not required.
-- The ESP-IDF BSP has already adapted LCD, touch, backlight, audio, sensors, and CH32 IO expansion.
-
-## Notes
-
-- Select `ESP32C6 Dev Module` for Arduino projects.
-- The Arduino example folder is designed for `esp32 by Espressif Systems v3.3.10`.
-- The `ESP-IDF-V554` folder is designed for ESP-IDF v5.5.4.
-- CH32V003 firmware is pre-programmed at the factory and does not need to be flashed separately.
-- ESP32-C6 supports 2.4 GHz Wi-Fi only; 5 GHz Wi-Fi is not supported.
-- For the weather demo, prepare an internet-connected Wi-Fi hotspot according to the example configuration.
-
-## License
-
-This repository is licensed under the Apache License 2.0. See [LICENSE](./LICENSE).
-
-## Support
-
-For product setup, development instructions, and troubleshooting, visit the [Waveshare documentation](https://docs.waveshare.com/ESP32-C6-Touch-LCD-2.8/). When reporting an issue, include the example path, framework version, reproduction steps, and complete serial log.
-
-- [Open an issue](https://github.com/waveshareteam/ESP32-C6-Touch-LCD-2.8/issues/new)
-- [Waveshare support](https://www.waveshare.com/contact_us)
+Apache License 2.0. See [LICENSE](LICENSE).
