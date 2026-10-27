@@ -394,8 +394,8 @@ private:
         }
 
         // esp_xiaozhi 0.1.1 does not expose server hello audio metadata.
-        // Opus supports decoding directly at the requested 24 kHz output rate,
-        // so the app always decodes into the board's physical playback rate.
+        // The app decodes at its physical output rate and reads frame length
+        // from each Opus packet, independently of these configured defaults.
         self->_callbacks.onAudio(
             data,
             static_cast<size_t>(len),

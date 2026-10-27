@@ -37,6 +37,9 @@
 #define ESP_UTILS_LOG_TAG "BS:XiaozhiApp"
 #include "esp_lib_utils.h"
 
+// Public libopus API exported by esp_audio_codec; no decoder allocation needed.
+extern "C" int opus_packet_get_nb_samples(const unsigned char *packet, int length, int sample_rate);
+
 LV_IMG_DECLARE(img_app_aichats);
 
 namespace esp_brookesia::apps {
@@ -56,7 +59,7 @@ constexpr uint32_t CONTROL_EVENT_POST_TIMEOUT_MS = 100;
 constexpr uint32_t LIFECYCLE_WAIT_MS = 10000;
 constexpr uint32_t PLAYBACK_IDLE_WAIT_MS = 1000;
 constexpr size_t CONTROL_QUEUE_LENGTH = 8;
-constexpr size_t PLAYBACK_QUEUE_LENGTH = 4;
+constexpr size_t PLAYBACK_QUEUE_LENGTH = 2;
 constexpr size_t DEVICE_TDM_CHANNELS = CODEC_VOICE_INPUT_CHANNELS;
 constexpr size_t DEVICE_MIC1_SLOT = 0;
 static_assert(
@@ -1157,7 +1160,7 @@ void XiaozhiApp::handleControlEvent(const ControlEvent &event)
             if (!startPlayback()) {
                 closeChannel(false);
                 shutdownAudio();
-                setError(ESP_ERR_NO_MEM, "Create Xiaozhi playback task");
+                setError(ESP_ERR_NO_MEM, "Prepare Xiaozhi reply resources");
                 schedulePrepare(RETRY_INTERVAL_MS);
                 break;
             }
@@ -1485,8 +1488,8 @@ bool XiaozhiApp::prepareChat()
     callbacks.onAudio = [this, client_generation](
         const uint8_t *data,
         size_t len,
-        int sample_rate,
-        int frame_duration_ms,
+        int,
+        int,
         uint32_t timestamp
     ) {
         ScopedLifecycleAdmission lifecycle_user(_lifecycle_refs);
@@ -1506,35 +1509,32 @@ bool XiaozhiApp::prepareChat()
         AudioPacket packet = {};
         packet.turn_generation = _turn_generation.load();
         packet.timestamp = timestamp;
-        packet.sample_rate = static_cast<uint16_t>(
-            sample_rate > 0 && sample_rate <= UINT16_MAX ?
-            sample_rate : CHAT_SAMPLE_RATE
-        );
-        packet.frame_duration_ms = static_cast<uint16_t>(
-            frame_duration_ms > 0 && frame_duration_ms <= UINT16_MAX ?
-            frame_duration_ms : CHAT_FRAME_DURATION_MS
-        );
         packet.size = static_cast<uint16_t>(len);
         memcpy(packet.data, data, len);
 
-        if (!_playback_mutex ||
-                xSemaphoreTake(
-                    _playback_mutex,
-                    pdMS_TO_TICKS(CONTROL_EVENT_POST_TIMEOUT_MS)
-                ) != pdTRUE) {
-            return;
-        }
-        if (_accept_playback.load() &&
+        // Apply bounded backpressure without holding the consumer's mutex.
+        const TickType_t started = xTaskGetTickCount();
+        while (_playback_mutex && _audio_tasks_running.load() &&
+                _accept_playback.load() && !_shutdown.load() &&
                 _chat_generation.load() == client_generation &&
                 packet.turn_generation == _turn_generation.load() &&
                 _channel_state.load() == ChannelState::Open) {
-            if (!_playback_queue) _playback_queue = xQueueCreateWithCaps(
-                PLAYBACK_QUEUE_LENGTH, sizeof(AudioPacket), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-            if (_playback_queue && xQueueSend(_playback_queue, &packet, 0) == pdTRUE) {
-                _last_audio_packet_tick.store(xTaskGetTickCount());
+            if (xSemaphoreTake(_playback_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+                const bool queued = _accept_playback.load() && _playback_queue &&
+                    packet.turn_generation == _turn_generation.load() &&
+                    xQueueSend(_playback_queue, &packet, 0) == pdTRUE;
+                xSemaphoreGive(_playback_mutex);
+                if (queued) {
+                    _last_audio_packet_tick.store(xTaskGetTickCount());
+                    return;
+                }
             }
+            if (xTaskGetTickCount() - started >= pdMS_TO_TICKS(300)) {
+                ESP_UTILS_LOGW("Reply audio queue remained full for 300 ms");
+                return;
+            }
+            vTaskDelay(pdMS_TO_TICKS(5));
         }
-        xSemaphoreGive(_playback_mutex);
     };
     callbacks.onError = [this, client_generation](
         esp_err_t error,
@@ -1712,7 +1712,15 @@ bool XiaozhiApp::ensureEncoder()
     if (!setAudioModes(false, false)) return false;
     if (!_audio_processor || !_audio_processor->suspendWakeWord() || !releasePlaybackResources()) return false;
     stopEncoder();
-    logServiceInfoHeap("wake model released; audio worker stack already reserved");
+    // Reserve incoming packet storage before the codec and TLS receive bursts.
+    {
+        ScopedSemaphoreLock lock(_playback_mutex, portMAX_DELAY);
+        if (!lock) return false;
+        _playback_queue = xQueueCreateWithCaps(
+            PLAYBACK_QUEUE_LENGTH, sizeof(AudioPacket), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        if (!_playback_queue) return false;
+    }
+    logServiceInfoHeap("wake model released; reply queue and audio stack reserved");
     esp_opus_enc_config_t enc = ESP_OPUS_ENC_CONFIG_DEFAULT();
     enc.sample_rate = CHAT_SAMPLE_RATE;
     enc.channel = ESP_AUDIO_MONO;
@@ -1760,9 +1768,7 @@ bool XiaozhiApp::startPlayback()
 {
     ScopedSemaphoreLock lock(_playback_mutex, portMAX_DELAY);
     if (!lock) return false;
-    if (!_playback_queue) _playback_queue = xQueueCreateWithCaps(
-        PLAYBACK_QUEUE_LENGTH, sizeof(AudioPacket), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    if (!_playback_queue) return false;
+    if (!_playback_queue || !ensureDecoder()) return false;
     _playback_enabled.store(true);
     return true;
 }
@@ -1777,7 +1783,6 @@ bool XiaozhiApp::releasePlaybackResources()
     if (!lock) return false;
     if (_opus_decoder) esp_opus_dec_close(_opus_decoder);
     _opus_decoder = nullptr;
-    _decoder_frame_duration_ms = 0;
     if (_playback_queue) vQueueDeleteWithCaps(_playback_queue);
     _playback_queue = nullptr;
     return true;
@@ -1821,7 +1826,6 @@ bool XiaozhiApp::shutdownAudio()
     _encoded_frame = nullptr;
     _opus_input_size = 0;
     _opus_output_size = 0;
-    _decoder_frame_duration_ms = 0;
     {
         ScopedSemaphoreLock lock(_playback_mutex, portMAX_DELAY);
         if (_playback_queue) vQueueDeleteWithCaps(_playback_queue);
@@ -1906,91 +1910,24 @@ bool XiaozhiApp::enterReadyAudioMode()
     return false;
 }
 
-bool XiaozhiApp::configureDecoder(
-    uint16_t sample_rate,
-    uint16_t frame_duration_ms
-)
+bool XiaozhiApp::ensureDecoder()
 {
-    switch (sample_rate) {
-    case 8000:
-    case 12000:
-    case 16000:
-    case 24000:
-    case 48000:
-        break;
-    default:
-        ESP_UTILS_LOGE(
-            "Unsupported Xiaozhi output sample rate: %u",
-            static_cast<unsigned int>(sample_rate)
-        );
-        return false;
-    }
-
-    esp_opus_dec_frame_duration_t frame_duration;
-    switch (frame_duration_ms) {
-    case 5:
-        frame_duration = ESP_OPUS_DEC_FRAME_DURATION_5_MS;
-        break;
-    case 10:
-        frame_duration = ESP_OPUS_DEC_FRAME_DURATION_10_MS;
-        break;
-    case 20:
-        frame_duration = ESP_OPUS_DEC_FRAME_DURATION_20_MS;
-        break;
-    case 40:
-        frame_duration = ESP_OPUS_DEC_FRAME_DURATION_40_MS;
-        break;
-    case 60:
-        frame_duration = ESP_OPUS_DEC_FRAME_DURATION_60_MS;
-        break;
-    case 80:
-        frame_duration = ESP_OPUS_DEC_FRAME_DURATION_80_MS;
-        break;
-    case 100:
-        frame_duration = ESP_OPUS_DEC_FRAME_DURATION_100_MS;
-        break;
-    case 120:
-        frame_duration = ESP_OPUS_DEC_FRAME_DURATION_120_MS;
-        break;
-    default:
-        ESP_UTILS_LOGE(
-            "Unsupported Xiaozhi Opus frame duration: %u ms",
-            static_cast<unsigned int>(frame_duration_ms)
-        );
-        return false;
-    }
-
-    if (_opus_decoder && _decoder_frame_duration_ms == frame_duration_ms) {
-        return true;
-    }
-
-    if (_opus_decoder) {
-        esp_opus_dec_close(_opus_decoder);
-        _opus_decoder = nullptr;
-    }
-    _decoder_frame_duration_ms = 0;
-
-    esp_opus_dec_cfg_t decoder_config = ESP_OPUS_DEC_CONFIG_DEFAULT();
-    // Opus packets support native decoding at any supported output rate.
-    decoder_config.sample_rate = DEVICE_AUDIO_SAMPLE_RATE;
-    decoder_config.channel = ESP_AUDIO_MONO;
-    decoder_config.frame_duration = frame_duration;
-    decoder_config.self_delimited = false;
-    auto decoder_ret = esp_opus_dec_open(
-        &decoder_config, sizeof(decoder_config), &_opus_decoder
-    );
-    if (decoder_ret != ESP_AUDIO_ERR_OK || !_opus_decoder) {
-        ESP_UTILS_LOGE(
-            "Open Xiaozhi Opus decoder failed: %d",
-            static_cast<int>(decoder_ret)
-        );
+    if (_opus_decoder) return true;
+    // Claim the large decoder block immediately after releasing the encoder.
+    logServiceInfoHeap("before reply decoder; encoder and WakeNet released");
+    esp_opus_dec_cfg_t config = ESP_OPUS_DEC_CONFIG_DEFAULT();
+    config.sample_rate = DEVICE_AUDIO_SAMPLE_RATE;
+    config.channel = ESP_AUDIO_MONO;
+    config.frame_duration = ESP_OPUS_DEC_FRAME_DURATION_2_5_MS;
+    config.self_delimited = false;
+    const auto ret = esp_opus_dec_open(&config, sizeof(config), &_opus_decoder);
+    if (ret != ESP_AUDIO_ERR_OK || !_opus_decoder) {
+        ESP_UTILS_LOGE("Open Xiaozhi Opus decoder failed: %d", (int)ret);
+        logServiceInfoHeap("reply decoder allocation failed");
         _opus_decoder = nullptr;
         return false;
     }
-
-    _decoder_frame_duration_ms = frame_duration_ms;
-    ESP_UTILS_LOGI("Xiaozhi output: Opus decoded directly at %u Hz, %u ms",
-                   (unsigned)DEVICE_AUDIO_SAMPLE_RATE, (unsigned)frame_duration_ms);
+    logServiceInfoHeap("reply decoder reserved before first audio packet");
     return true;
 }
 
@@ -2517,24 +2454,22 @@ void XiaozhiApp::encodeAudioFrame(const int16_t *pcm, size_t count)
 
 void XiaozhiApp::playAudio()
 {
-    int16_t *mono = nullptr, *stereo = nullptr;
-    size_t mono_capacity = 0, stereo_capacity = 0;
+    int16_t *mono = nullptr;
+    int16_t stereo[XiaozhiAudioProcessor::PCM_FRAME_SAMPLES * 2];
+    size_t mono_capacity = 0;
     auto release_buffers = [&]() {
-        free(mono); free(stereo);
-        mono = stereo = nullptr;
-        mono_capacity = stereo_capacity = 0;
+        free(mono);
+        mono = nullptr;
+        mono_capacity = 0;
     };
-    auto prepare_buffers = [&](const AudioPacket &audio) {
-        const size_t samples = DEVICE_AUDIO_SAMPLE_RATE * audio.frame_duration_ms / 1000;
+    auto prepare_buffers = [&](size_t samples) {
         if (!samples || samples > MAX_DEVICE_PCM_SAMPLES) return false;
         const size_t mono_bytes = samples * sizeof(int16_t);
-        const size_t stereo_bytes = mono_bytes * 2;
-        if (mono_capacity >= mono_bytes && stereo_capacity >= stereo_bytes) return true;
+        if (mono_capacity >= mono_bytes) return true;
         release_buffers();
         mono = static_cast<int16_t *>(malloc(mono_bytes));
-        stereo = static_cast<int16_t *>(malloc(stereo_bytes));
-        if (mono && stereo) {
-            mono_capacity = mono_bytes; stereo_capacity = stereo_bytes;
+        if (mono) {
+            mono_capacity = mono_bytes;
             return true;
         }
         release_buffers();
@@ -2571,11 +2506,12 @@ void XiaozhiApp::playAudio()
             }
             if (received && _accept_playback.load() &&
                     packet.turn_generation == _turn_generation.load()) {
-                if (!configureDecoder(
-                        packet.sample_rate, packet.frame_duration_ms
-                    )) {
+                const int samples = opus_packet_get_nb_samples(
+                    packet.data, packet.size, DEVICE_AUDIO_SAMPLE_RATE);
+                if (!_opus_decoder || samples <= 0 || samples > MAX_DEVICE_PCM_SAMPLES) {
                     output_error = true;
-                } else if (!prepare_buffers(packet)) {
+                    output_error_code = ESP_ERR_INVALID_SIZE;
+                } else if (!prepare_buffers(samples)) {
                     output_error = true;
                     output_error_code = ESP_ERR_NO_MEM;
                 } else {
@@ -2595,12 +2531,8 @@ void XiaozhiApp::playAudio()
                         output.decoded_size <= mono_capacity;
                     if (opus_ok) {
                         playback_samples = output.decoded_size / sizeof(int16_t);
-                        if (playback_samples <= stereo_capacity / (2 * sizeof(int16_t))) {
-                            playback_pcm = mono;
-                            decoded = true;
-                        } else {
-                            output_error = true;
-                        }
+                        playback_pcm = mono;
+                        decoded = true;
                     }
                 }
             }
@@ -2634,16 +2566,28 @@ void XiaozhiApp::playAudio()
             }
         } else if (decoded && _accept_playback.load() &&
                 packet.turn_generation == _turn_generation.load()) {
-            for (size_t i = 0; i < playback_samples; ++i) {
-                stereo[i * 2] = playback_pcm[i];
-                stereo[i * 2 + 1] = playback_pcm[i];
-            }
             size_t written = 0;
-            size_t write_size =
-                playback_samples * 2 * sizeof(int16_t);
-            esp_err_t write_ret = bsp_extra_i2s_write(
-                stereo, write_size, &written, 200
-            );
+            const size_t write_size = playback_samples * 2 * sizeof(int16_t);
+            esp_err_t write_ret = ESP_OK;
+            // Expand mono into bounded stereo chunks on the shared worker stack.
+            for (size_t offset = 0; offset < playback_samples &&
+                    _playback_enabled.load() && _accept_playback.load();) {
+                const size_t count = std::min(playback_samples - offset,
+                    size_t{XiaozhiAudioProcessor::PCM_FRAME_SAMPLES});
+                for (size_t i = 0; i < count; ++i) {
+                    stereo[i * 2] = stereo[i * 2 + 1] = playback_pcm[offset + i];
+                }
+                const size_t chunk_bytes = count * 2 * sizeof(int16_t);
+                size_t chunk_written = 0;
+                write_ret = bsp_extra_i2s_write(stereo, chunk_bytes, &chunk_written, 200);
+                written += chunk_written;
+                if (write_ret != ESP_OK || chunk_written != chunk_bytes) break;
+                offset += count;
+            }
+            if (!_playback_enabled.load() || !_accept_playback.load()) {
+                _playback_busy.store(false);
+                continue;
+            }
             if (write_ret == ESP_OK && written == write_size) {
                 _last_audio_write_tick.store(xTaskGetTickCount());
             } else {

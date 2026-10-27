@@ -110,8 +110,6 @@ private:
     struct AudioPacket {
         uint32_t turn_generation;
         uint32_t timestamp;
-        uint16_t sample_rate;
-        uint16_t frame_duration_ms;
         uint16_t size;
         uint8_t data[1500];
     };
@@ -201,7 +199,6 @@ private:
     void *_opus_decoder = nullptr;
     int _opus_input_size = 0;
     int _opus_output_size = 0;
-    int _decoder_frame_duration_ms = 0;
 
     char _activation_code[64] = {};
     char _activation_message[192] = {};
@@ -242,7 +239,7 @@ private:
     bool releaseAudioSession();
     bool setAudioModes(bool wake_word, bool voice);
     bool enterReadyAudioMode();
-    bool configureDecoder(uint16_t sample_rate, uint16_t frame_duration_ms);
+    bool ensureDecoder();
     esp_err_t openAudioChannel();
     esp_err_t startAutoStopTurn(const char *wake_word = nullptr);
     bool startListening(ListenMode mode, const char *wake_word = nullptr);
