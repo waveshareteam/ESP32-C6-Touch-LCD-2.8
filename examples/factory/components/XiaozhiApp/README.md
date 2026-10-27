@@ -4,7 +4,7 @@
 
 ## What It Does
 
-Talk to Xiaozhi from the factory desktop and view the conversation on the screen.
+Talk to Xiaozhi from the factory desktop, with a simple smile and connection status on screen.
 
 ## Hardware Required
 
@@ -16,7 +16,7 @@ Start the [factory desktop](../../README.md), connect Wi-Fi in Settings and open
 
 ## Expected Result
 
-Your recognized speech and the reply appear on the screen, and the speaker plays the reply. You can ask Xiaozhi to adjust volume or brightness; swipe up from the bottom center to return to the desktop.
+The speaker plays Xiaozhi's reply while the screen shows a static smile and the current status. Try saying “把音量调到80” or “把亮度调到50” to adjust volume or brightness; swipe up from the bottom center to return to the desktop.
 
 ## Troubleshooting
 
