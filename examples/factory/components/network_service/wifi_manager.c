@@ -1,4 +1,4 @@
-/* One worker owns connection, read-only scans and the C5-style SoftAP portal.
+/* One worker owns connection, read-only scans and the SoftAP setup portal.
  * Prefer a verified saved network at boot; otherwise use the RLCD default. */
 #include "wifi_manager.h"
 #include "bsp/esp-bsp.h"
