@@ -4,6 +4,8 @@
 #include "bsp_audio_session.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "esp_brookesia.hpp"
 #include "Settings.hpp"
 #include "DrawingBoard.hpp"
@@ -82,6 +84,16 @@ static bool app_start()
             else bar->clearClock();
         }, 1000, status);
     }
+    // This callback runs on the LVGL task, so the watermark measures its stack.
+    lv_timer_create([](lv_timer_t *) {
+        static UBaseType_t previous_min = CONFIG_BSP_LVGL_TASK_STACK_SIZE;
+        const UBaseType_t minimum = uxTaskGetStackHighWaterMark(nullptr);
+        if (minimum < previous_min) {
+            previous_min = minimum;
+            ESP_LOGI(TAG, "LVGL stack: minimum free=%u bytes, allocated=%u bytes",
+                     (unsigned)minimum, (unsigned)CONFIG_BSP_LVGL_TASK_STACK_SIZE);
+        }
+    }, 5000, nullptr);
     ESP_LOGI(TAG, "Desktop ready: 240x320, %u/12 APPs; internal free=%u, largest=%u; PSRAM=%u",
              installed, (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),

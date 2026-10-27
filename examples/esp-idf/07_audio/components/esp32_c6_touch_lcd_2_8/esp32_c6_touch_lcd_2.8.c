@@ -339,6 +339,7 @@ lv_display_t *bsp_display_start(void)
         .rotation = ESP_LV_ADAPTER_ROTATE_0,
         .tear_avoid_mode = ESP_LV_ADAPTER_TEAR_AVOID_MODE_NONE,
     };
+    cfg.lv_adapter_cfg.task_stack_size = CONFIG_BSP_LVGL_TASK_STACK_SIZE;
     return bsp_display_start_with_config(&cfg);
 }
 lv_display_t *bsp_display_start_with_config(const bsp_display_cfg_t *cfg)
