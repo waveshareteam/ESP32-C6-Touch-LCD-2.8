@@ -13,6 +13,7 @@
 #include "esp_ae_rate_cvt.h"
 #include "esp_event.h"
 #include "XiaozhiClient.hpp"
+#include "XiaozhiAudioProcessor.hpp"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
@@ -108,7 +109,7 @@ private:
     };
 
     struct PcmFrame {
-        int16_t samples[960];
+        int16_t samples[XiaozhiAudioProcessor::PCM_FRAME_SAMPLES];
     };
 
     struct AudioPacket {
@@ -122,7 +123,8 @@ private:
 
     static constexpr int CONTROL_TASK_STACK_SIZE = 12 * 1024;
     static constexpr int INPUT_TASK_STACK_SIZE = 6 * 1024;
-    static constexpr int ENCODER_TASK_STACK_SIZE = 40 * 1024;
+    // 20-ms Opus tests use 18.4 KB; retain room for PCM, TLS and RTOS frames.
+    static constexpr int ENCODER_TASK_STACK_SIZE = 24 * 1024;
     static constexpr int PLAYBACK_TASK_STACK_SIZE = 12 * 1024;
     static constexpr size_t AFE_INPUT_CHANNELS = 1;
 
@@ -169,8 +171,7 @@ private:
     std::atomic<bool> _input_task_running{false};
     std::atomic<bool> _encoder_task_running{false};
     std::atomic<bool> _encoder_enabled{false};
-    std::atomic<bool> _playback_release_requested{false};
-    std::atomic<bool> _playback_buffers_released{true};
+    std::atomic<bool> _playback_enabled{false};
     std::atomic<bool> _playback_task_running{false};
     std::atomic<bool> _capture_enabled{false};
     std::atomic<bool> _voice_enabled{false};
@@ -191,7 +192,6 @@ private:
     std::atomic<bool> _chat_started{false};
     std::atomic<bool> _ready_prompt_played{false};
     std::atomic<XiaozhiClient *> _protocol{nullptr};
-    std::atomic<bool> _input_resampler_reset_requested{false};
     std::atomic<uint32_t> _chat_generation{0};
     std::atomic<uint32_t> _turn_generation{0};
     std::atomic<bool> _control_event_lost{false};
@@ -210,11 +210,9 @@ private:
 
     void *_opus_encoder = nullptr;
     void *_opus_decoder = nullptr;
-    esp_ae_rate_cvt_handle_t _input_resamplers[AFE_INPUT_CHANNELS] = {};
     esp_ae_rate_cvt_handle_t _output_resampler = nullptr;
     int _opus_input_size = 0;
     int _opus_output_size = 0;
-    uint32_t _input_resampler_max_samples = 0;
     int _decoder_sample_rate = 0;
     int _decoder_frame_duration_ms = 0;
 
@@ -250,6 +248,7 @@ private:
     bool ensureEncoder();
     void stopEncoder();
     bool releasePlaybackResources();
+    bool startPlayback();
     bool shutdownAudio();
     bool releaseAudioSession();
     bool setAudioModes(bool wake_word, bool voice);

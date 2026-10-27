@@ -137,7 +137,7 @@ typedef struct esp_mcp_mbuf_t {
     uint16_t outlen;                      /*!< Response data length (bytes) */
 } esp_mcp_mbuf_t;
 
-#define ESP_MCP_MAX_SESSION_STATES 64
+#define ESP_MCP_MAX_SESSION_STATES CONFIG_MCP_SESSION_STATES_MAX
 
 typedef struct {
     bool used;
@@ -229,7 +229,7 @@ typedef struct esp_mcp_s {
         bool used;
         char session_id[32];
         char request_id[64];
-    } recent_request_ids[64];
+    } recent_request_ids[CONFIG_MCP_RECENT_REQUEST_IDS_MAX];
 
     // Generic _meta storage for unknown fields
     char *request_meta_json;

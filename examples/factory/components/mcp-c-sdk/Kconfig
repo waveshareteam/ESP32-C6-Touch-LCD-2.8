@@ -70,6 +70,20 @@ menu "Model Context Protocol"
             normal multi-request flows; very large values delay cleanup of idle sessions.
 
 
+    config MCP_SESSION_STATES_MAX
+        int "Maximum MCP session states per instance"
+        range 1 64
+        default 64
+        help
+            Keep a small bounded table for products with one persistent client.
+
+    config MCP_RECENT_REQUEST_IDS_MAX
+        int "Maximum recent MCP request IDs per instance"
+        range 4 64
+        default 64
+        help
+            Number of recent request IDs retained for duplicate detection.
+
     config MCP_RESOURCE_SUBSCRIPTIONS_MAX
         int "Maximum resource subscriptions per MCP instance"
         range 4 256
