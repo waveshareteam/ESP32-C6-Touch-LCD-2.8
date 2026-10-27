@@ -50,8 +50,6 @@ constexpr uint32_t CHAT_SAMPLE_RATE = 16000;
 constexpr uint32_t DEVICE_AUDIO_SAMPLE_RATE = 24000;
 constexpr uint32_t CHAT_FRAME_DURATION_MS = 60;
 constexpr uint32_t PLAYBACK_DRAIN_MS = 200;
-constexpr uint32_t PREROLL_QUEUE_TIMEOUT_MS = 5000;
-constexpr uint32_t PREROLL_ENCODE_TIMEOUT_MS = 15000;
 constexpr uint32_t UPLINK_FIRST_PACKET_TIMEOUT_MS = 3000;
 constexpr uint32_t CONTROL_EVENT_POST_TIMEOUT_MS = 100;
 constexpr uint32_t LIFECYCLE_WAIT_MS = 10000;
@@ -72,8 +70,6 @@ constexpr size_t MAX_SERVER_PCM_SAMPLES =
     MAX_SERVER_SAMPLE_RATE * MAX_SERVER_FRAME_DURATION_MS / 1000;
 constexpr size_t MAX_DEVICE_PCM_SAMPLES =
     DEVICE_AUDIO_SAMPLE_RATE * MAX_SERVER_FRAME_DURATION_MS / 1000 + 256;
-constexpr size_t MAX_SERVER_PCM_BYTES =
-    MAX_SERVER_PCM_SAMPLES * sizeof(int16_t);
 
 void logServiceInfoHeap(const char *context)
 {
@@ -344,7 +340,6 @@ bool XiaozhiApp::init()
     }
     _control_ack = _control_ack ? _control_ack : xSemaphoreCreateBinary();
     _control_exited = _control_exited ? _control_exited : xSemaphoreCreateBinary();
-    _preroll_done = _preroll_done ? _preroll_done : xSemaphoreCreateBinary();
     // Short bounded queues leave SRAM for codec state, TLS and LCD DMA.
     _control_queue = _control_queue ? _control_queue :
                      xQueueCreateWithCaps(
@@ -362,20 +357,19 @@ bool XiaozhiApp::init()
                           MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT
                       );
     if (!_state_mutex || !_lifecycle_mutex || !_audio_tx_mutex || !_control_ack ||
-            !_control_exited || !_preroll_done || !_control_queue ||
+            !_control_exited || !_control_queue ||
             !_pcm_queue || !_playback_queue) {
         ESP_UTILS_LOGE(
             "Xiaozhi allocation handles: state=%p lifecycle=%p audio_tx=%p "
-            "ack=%p exited=%p preroll=%p control=%p pcm=%p playback=%p",
+            "ack=%p exited=%p control=%p pcm=%p playback=%p",
             _state_mutex, _lifecycle_mutex, _audio_tx_mutex, _control_ack,
-            _control_exited, _preroll_done, _control_queue, _pcm_queue, _playback_queue
+            _control_exited, _control_queue, _pcm_queue, _playback_queue
         );
         logServiceInfoHeap("synchronization allocation failed");
         const char *failed = !_state_mutex ? "state mutex" :
                              !_audio_tx_mutex ? "audio TX mutex" :
                              !_control_ack ? "control acknowledgement" :
                              !_control_exited ? "control exit semaphore" :
-                             !_preroll_done ? "preroll semaphore" :
                              !_control_queue ? "control queue (internal RAM)" :
                              !_pcm_queue ? "PCM queue (internal RAM)" :
                              "playback queue (internal RAM)";
@@ -555,10 +549,6 @@ bool XiaozhiApp::deinit()
         vSemaphoreDelete(_control_exited);
         _control_exited = nullptr;
     }
-    if (_preroll_done) {
-        vSemaphoreDelete(_preroll_done);
-        _preroll_done = nullptr;
-    }
     if (_control_ack) {
         vSemaphoreDelete(_control_ack);
         _control_ack = nullptr;
@@ -667,18 +657,12 @@ void XiaozhiApp::refreshUi()
     }
     char code[sizeof(_activation_code)] = {};
     char message[sizeof(_activation_message)] = {};
-    char role[sizeof(_chat_role)] = {};
-    char text[sizeof(_chat_text)] = {};
-    char emotion[sizeof(_emotion)] = {};
     if (!_state_mutex ||
             xSemaphoreTake(_state_mutex, pdMS_TO_TICKS(20)) != pdTRUE) {
         return;
     }
     memcpy(code, _activation_code, sizeof(code));
     memcpy(message, _activation_message, sizeof(message));
-    memcpy(role, _chat_role, sizeof(role));
-    memcpy(text, _chat_text, sizeof(text));
-    memcpy(emotion, _emotion, sizeof(emotion));
     xSemaphoreGive(_state_mutex);
 
     State state = _state.load();
@@ -686,8 +670,6 @@ void XiaozhiApp::refreshUi()
     _ui->setStatus(stateText(state));
     const bool talking = state == State::Listening || state == State::Processing || state == State::Speaking;
     _ui->setAction(talking ? "Stop" : "Talk", talking || state == State::Ready);
-    _ui->setChatMessage(role, text);
-    _ui->setEmotion(emotion[0] ? emotion : "neutral");
     _ui->setActivation(
         code,
         message[0] ? message : xiaozhiUiText(
@@ -709,38 +691,6 @@ void XiaozhiApp::setError(esp_err_t error, const char *source)
     );
     if (_network_ready.load()) {
         setState(State::Error);
-    }
-}
-
-void XiaozhiApp::setChatMessage(XiaozhiClient::TextRole role, const char *text)
-{
-    if (!_state_mutex || xSemaphoreTake(_state_mutex, portMAX_DELAY) != pdTRUE) {
-        return;
-    }
-    copyString(
-        _chat_role,
-        sizeof(_chat_role),
-        role == XiaozhiClient::TextRole::Assistant ? "assistant" : "user"
-    );
-    copyString(_chat_text, sizeof(_chat_text), text);
-    xSemaphoreGive(_state_mutex);
-}
-
-void XiaozhiApp::setEmotion(const char *emotion)
-{
-    if (_state_mutex && xSemaphoreTake(_state_mutex, portMAX_DELAY) == pdTRUE) {
-        copyString(_emotion, sizeof(_emotion), emotion ? emotion : "neutral");
-        xSemaphoreGive(_state_mutex);
-    }
-}
-
-void XiaozhiApp::clearConversationUi()
-{
-    if (_state_mutex && xSemaphoreTake(_state_mutex, portMAX_DELAY) == pdTRUE) {
-        _chat_role[0] = '\0';
-        _chat_text[0] = '\0';
-        copyString(_emotion, sizeof(_emotion), "neutral");
-        xSemaphoreGive(_state_mutex);
     }
 }
 
@@ -877,20 +827,14 @@ bool XiaozhiApp::postControlEvent(const ControlEvent &event, bool wait_for_ack)
         return false;
     }
     if (!wait_for_ack) {
-        bool best_effort =
-            event.type == ControlEventType::ChatText ||
-            event.type == ControlEventType::Emotion;
-        TickType_t wait_ticks =
-            best_effort ? 0 : pdMS_TO_TICKS(CONTROL_EVENT_POST_TIMEOUT_MS);
+        TickType_t wait_ticks = pdMS_TO_TICKS(CONTROL_EVENT_POST_TIMEOUT_MS);
         bool queued = xQueueSend(_control_queue, &event, wait_ticks) == pdTRUE;
         if (!queued) {
             ESP_UTILS_LOGW(
                 "Control queue rejected event %u",
                 static_cast<unsigned>(event.type)
             );
-            if (!best_effort) {
-                _control_event_lost.store(true);
-            }
+            _control_event_lost.store(true);
         }
         return queued;
     }
@@ -1187,25 +1131,6 @@ void XiaozhiApp::handleControlEvent(const ControlEvent &event)
             enterReadyAudioMode();
         }
         break;
-    case ControlEventType::ChatText:
-        if (_channel_state.load() == ChannelState::Open &&
-                _listen_mode != ListenMode::None) {
-            ESP_UTILS_LOGI(
-                "Server text received (role=%u, bytes=%u)",
-                static_cast<unsigned int>(event.role),
-                static_cast<unsigned int>(strlen(event.text))
-            );
-            setChatMessage(
-                static_cast<XiaozhiClient::TextRole>(event.role), event.text
-            );
-        }
-        break;
-    case ControlEventType::Emotion:
-        if (_channel_state.load() == ChannelState::Open &&
-                _listen_mode != ListenMode::None) {
-            setEmotion(event.text);
-        }
-        break;
     case ControlEventType::TtsStart: {
         State state = _state.load();
         if (_channel_state.load() == ChannelState::Open &&
@@ -1223,6 +1148,7 @@ void XiaozhiApp::handleControlEvent(const ControlEvent &event)
                 schedulePrepare(RETRY_INTERVAL_MS);
                 break;
             }
+            stopEncoder();
             _awaiting_response = false;
             _tts_active = true;
             _tts_stop_pending.store(false);
@@ -1516,26 +1442,6 @@ bool XiaozhiApp::prepareChat()
         }
         post_simple(ControlEventType::ServerGoodbye);
     };
-    callbacks.onText = [this, client_generation](
-        XiaozhiClient::TextRole role,
-        const std::string &text
-    ) {
-        ControlEvent event = {};
-        event.type = ControlEventType::ChatText;
-        event.role = static_cast<uint8_t>(role);
-        event.chat_generation = client_generation;
-        event.turn_generation = _turn_generation.load();
-        copyString(event.text, sizeof(event.text), text.c_str());
-        (void)postControlEvent(event);
-    };
-    callbacks.onEmotion = [this, client_generation](const std::string &emotion) {
-        ControlEvent event = {};
-        event.type = ControlEventType::Emotion;
-        event.chat_generation = client_generation;
-        event.turn_generation = _turn_generation.load();
-        copyString(event.text, sizeof(event.text), emotion.c_str());
-        (void)postControlEvent(event);
-    };
     callbacks.onTts = [this, client_generation](
         XiaozhiClient::TtsState state,
         const std::string &text
@@ -1544,8 +1450,6 @@ bool XiaozhiApp::prepareChat()
             return;
         }
         (void)text;
-        if (_visible.load() && _channel_state.load() == ChannelState::Open) {
-        }
         if (state == XiaozhiClient::TtsState::SentenceStart) {
             return;
         }
@@ -1698,9 +1602,9 @@ bool XiaozhiApp::ensureAudioReady()
     const bool input_resamplers_ready =
         _input_resamplers[0];
     if (_audio_tasks_running.load() && _input_task_running.load() &&
-            _encoder_task_running.load() && _playback_task_running.load() &&
+            _playback_task_running.load() &&
             _audio_processor && _audio_processor->isReady() &&
-            _opus_encoder && _opus_decoder && input_resamplers_ready &&
+            input_resamplers_ready &&
             _input_resampler_max_samples > 0) {
         return true;
     }
@@ -1736,11 +1640,6 @@ bool XiaozhiApp::ensureAudioReady()
         return false;
     }
     _codec_claimed.store(true);
-    if (!_audio_processor || !_audio_processor->initialize()) {
-        setError(ESP_FAIL, "Initialize Xiaozhi audio processor");
-        shutdownAudio();
-        return false;
-    }
 
     esp_ae_rate_cvt_cfg_t input_resampler_config = {};
     input_resampler_config.src_rate = DEVICE_AUDIO_SAMPLE_RATE;
@@ -1867,34 +1766,6 @@ bool XiaozhiApp::ensureAudioReady()
         }
     });
 
-    esp_opus_enc_config_t enc = ESP_OPUS_ENC_CONFIG_DEFAULT();
-    enc.sample_rate = CHAT_SAMPLE_RATE;
-    enc.channel = ESP_AUDIO_MONO;
-    enc.bits_per_sample = ESP_AUDIO_BIT16;
-    enc.bitrate = ESP_OPUS_BITRATE_AUTO;
-    enc.frame_duration = ESP_OPUS_ENC_FRAME_DURATION_60_MS;
-    enc.application_mode = ESP_OPUS_ENC_APPLICATION_AUDIO;
-    enc.complexity = 0;
-    enc.enable_fec = false;
-    enc.enable_dtx = true;
-    enc.enable_vbr = true;
-    if (esp_opus_enc_open(&enc, sizeof(enc), &_opus_encoder) != ESP_AUDIO_ERR_OK ||
-            !_opus_encoder ||
-            esp_opus_enc_get_frame_size(
-                _opus_encoder, &_opus_input_size, &_opus_output_size
-            ) != ESP_AUDIO_ERR_OK ||
-            _opus_input_size != static_cast<int>(sizeof(PcmFrame::samples))) {
-        setError(ESP_FAIL, "Open OPUS encoder");
-        shutdownAudio();
-        return false;
-    }
-
-    if (!configureDecoder(DEVICE_AUDIO_SAMPLE_RATE, CHAT_FRAME_DURATION_MS)) {
-        setError(ESP_FAIL, "Open OPUS decoder");
-        shutdownAudio();
-        return false;
-    }
-
     _audio_tasks_running.store(true);
     ESP_UTILS_LOGI(
         "Audio task heap before create: internal free=%u, largest=%u",
@@ -1920,22 +1791,6 @@ bool XiaozhiApp::ensureAudioReady()
         shutdownAudio();
         return false;
     }
-    _encoder_task_running.store(true);
-    if (xTaskCreatePinnedToCoreWithCaps(
-            encoderTaskEntry,
-            "xiaozhi_encoder",
-            ENCODER_TASK_STACK_SIZE,
-            this,
-            2,
-            &_encoder_task,
-            0,
-            MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT
-        ) != pdPASS) {
-        _encoder_task_running.store(false);
-        setError(ESP_ERR_NO_MEM, "Create Xiaozhi encoder task");
-        shutdownAudio();
-        return false;
-    }
     _playback_task_running.store(true);
     if (xTaskCreatePinnedToCoreWithCaps(
             playbackTaskEntry,
@@ -1952,15 +1807,102 @@ bool XiaozhiApp::ensureAudioReady()
         shutdownAudio();
         return false;
     }
+    // Reserve capture/playback tasks before loading the wake model.
+    vTaskDelay(1);
+    logServiceInfoHeap("before audio processor initialization");
+    if (!_audio_processor || !_audio_processor->initialize()) {
+        setError(ESP_ERR_NO_MEM, "Initialize Xiaozhi audio processor");
+        shutdownAudio();
+        return false;
+    }
+    return true;
+}
+
+bool XiaozhiApp::ensureEncoder()
+{
+    if (_encoder_task_running.load() && _opus_encoder) return true;
+    setAudioModes(false, false);
+    if (!_audio_processor || !_audio_processor->suspendWakeWord() || !releasePlaybackResources()) return false;
+    logServiceInfoHeap("wake model released before encoder");
+    esp_opus_enc_config_t enc = ESP_OPUS_ENC_CONFIG_DEFAULT();
+    enc.sample_rate = CHAT_SAMPLE_RATE;
+    enc.channel = ESP_AUDIO_MONO;
+    enc.bits_per_sample = ESP_AUDIO_BIT16;
+    enc.bitrate = ESP_OPUS_BITRATE_AUTO;
+    enc.frame_duration = ESP_OPUS_ENC_FRAME_DURATION_60_MS;
+    enc.application_mode = ESP_OPUS_ENC_APPLICATION_AUDIO;
+    enc.complexity = 0;
+    enc.enable_fec = false;
+    enc.enable_dtx = true;
+    enc.enable_vbr = true;
+    if (esp_opus_enc_open(&enc, sizeof(enc), &_opus_encoder) != ESP_AUDIO_ERR_OK ||
+            !_opus_encoder ||
+            esp_opus_enc_get_frame_size(
+                _opus_encoder, &_opus_input_size, &_opus_output_size
+            ) != ESP_AUDIO_ERR_OK ||
+            _opus_input_size != static_cast<int>(sizeof(PcmFrame::samples))) {
+        setError(ESP_FAIL, "Open OPUS encoder");
+        stopEncoder();
+        return false;
+    }
+
+    _encoder_enabled.store(true);
+    _encoder_task_running.store(true);
+    if (xTaskCreatePinnedToCoreWithCaps(
+            encoderTaskEntry,
+            "xiaozhi_encoder",
+            ENCODER_TASK_STACK_SIZE,
+            this,
+            2,
+            &_encoder_task,
+            0,
+            MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT
+        ) != pdPASS) {
+        _encoder_task_running.store(false);
+        setError(ESP_ERR_NO_MEM, "Create Xiaozhi encoder task");
+        _encoder_enabled.store(false);
+        stopEncoder();
+        return false;
+    }
+    return true;
+}
+
+void XiaozhiApp::stopEncoder()
+{
+    _encoder_enabled.store(false);
+    while (_encoder_task_running.load()) vTaskDelay(pdMS_TO_TICKS(10));
+    _encoder_task = nullptr;
+    if (_opus_encoder) esp_opus_enc_close(_opus_encoder);
+    _opus_encoder = nullptr;
+    _opus_input_size = _opus_output_size = 0;
+    vTaskDelay(1);
+}
+
+bool XiaozhiApp::releasePlaybackResources()
+{
+    _accept_playback.store(false);
+    if (!resetPlaybackBuffer(false) || !waitForPlaybackIdle(PLAYBACK_IDLE_WAIT_MS)) return false;
+    if (_playback_task_running.load()) {
+        _playback_buffers_released.store(false);
+        _playback_release_requested.store(true);
+        while (_playback_task_running.load() && !_playback_buffers_released.load())
+            vTaskDelay(pdMS_TO_TICKS(5));
+    }
+    ScopedSemaphoreLock lock(_playback_mutex, portMAX_DELAY);
+    if (!lock) return false;
+    if (_opus_decoder) esp_opus_dec_close(_opus_decoder);
+    if (_output_resampler) esp_ae_rate_cvt_close(_output_resampler);
+    _opus_decoder = _output_resampler = nullptr;
+    _decoder_sample_rate = _decoder_frame_duration_ms = 0;
     return true;
 }
 
 bool XiaozhiApp::shutdownAudio()
 {
-    finishPreroll(ESP_ERR_INVALID_STATE);
     setAudioModes(false, false);
     _accept_playback.store(false);
     _audio_tasks_running.store(false);
+    _encoder_enabled.store(false);
     while (_input_task_running.load() || _encoder_task_running.load() ||
             _playback_task_running.load()) {
         vTaskDelay(pdMS_TO_TICKS(10));
@@ -2053,6 +1995,7 @@ bool XiaozhiApp::setAudioModes(bool wake_word, bool voice)
     _voice_enabled.store(false);
     bool success = !wake_word && !voice;
     if (_audio_processor && _audio_processor->isReady()) {
+        wake_word = wake_word && _audio_processor->hasWakeWord();
         bool voice_ok = _audio_processor->enableVoiceProcessing(voice);
         bool wake_word_ok = _audio_processor->enableWakeWord(wake_word);
         success = voice_ok && wake_word_ok;
@@ -2074,6 +2017,15 @@ bool XiaozhiApp::setAudioModes(bool wake_word, bool voice)
 
 bool XiaozhiApp::enterReadyAudioMode()
 {
+    stopEncoder();
+    if (!_visible.load() || !_network_ready.load() || !_transport_connected || !_chat_started.load())
+        return setAudioModes(false, false);
+    if (!releasePlaybackResources() || !_audio_processor || !_audio_processor->resumeWakeWord()) {
+        setError(ESP_ERR_NO_MEM, "Restore wake word model");
+        shutdownAudio();
+        schedulePrepare(RETRY_INTERVAL_MS);
+        return false;
+    }
     const bool enable_wake_word =
         _visible.load() && _network_ready.load() && _transport_connected &&
         _chat_started.load();
@@ -2209,92 +2161,6 @@ bool XiaozhiApp::configureDecoder(
     return true;
 }
 
-void XiaozhiApp::finishPreroll(esp_err_t result)
-{
-    _preroll_result.store(result);
-    _preroll_frames_remaining.store(0);
-    if (_preroll_active.exchange(false) && _preroll_done) {
-        xSemaphoreGive(_preroll_done);
-    }
-}
-
-esp_err_t XiaozhiApp::sendWakeWordPcm()
-{
-    if (!_audio_processor || !_audio_processor->isReady() ||
-            !_pcm_queue || !_preroll_done) {
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    std::vector<int16_t> pcm;
-    if (!_audio_processor->takeWakeWordPcm(pcm)) {
-        ESP_UTILS_LOGW("Wake word PCM cache is empty");
-        return ESP_OK;
-    }
-
-    constexpr size_t samples_per_frame =
-        XiaozhiAudioProcessor::PCM_FRAME_SAMPLES;
-    const size_t frame_count =
-        (pcm.size() + samples_per_frame - 1) / samples_per_frame;
-    if (frame_count == 0 || frame_count > PCM_QUEUE_LENGTH) {
-        ESP_UTILS_LOGW(
-            "Invalid wake word PCM cache size: %u samples",
-            static_cast<unsigned int>(pcm.size())
-        );
-        return ESP_ERR_INVALID_SIZE;
-    }
-
-    (void)xSemaphoreTake(_preroll_done, 0);
-    xQueueReset(_pcm_queue);
-    _preroll_result.store(ESP_OK);
-    _preroll_frames_remaining.store(static_cast<uint32_t>(frame_count));
-    _preroll_active.store(true);
-    _uplink_ready.store(true);
-
-    for (size_t i = 0; i < frame_count; ++i) {
-        PcmFrame frame = {};
-        const size_t offset = i * samples_per_frame;
-        const size_t remaining = pcm.size() - offset;
-        const size_t copy_samples =
-            remaining < samples_per_frame ? remaining : samples_per_frame;
-        memcpy(
-            frame.samples,
-            pcm.data() + offset,
-            copy_samples * sizeof(int16_t)
-        );
-        if (xQueueSend(
-                _pcm_queue,
-                &frame,
-                pdMS_TO_TICKS(PREROLL_QUEUE_TIMEOUT_MS)
-            ) != pdTRUE) {
-            finishPreroll(ESP_ERR_TIMEOUT);
-            break;
-        }
-    }
-
-    if (_preroll_active.load() &&
-            xSemaphoreTake(
-                _preroll_done,
-                pdMS_TO_TICKS(PREROLL_ENCODE_TIMEOUT_MS)
-            ) != pdTRUE) {
-        finishPreroll(ESP_ERR_TIMEOUT);
-    }
-
-    esp_err_t result =
-        static_cast<esp_err_t>(_preroll_result.load());
-    _preroll_active.store(false);
-    _uplink_ready.store(false);
-    if (result != ESP_OK) {
-        xQueueReset(_pcm_queue);
-        return result;
-    }
-
-    ESP_UTILS_LOGI(
-        "Sent %u wake word Opus preroll packet(s)",
-        static_cast<unsigned int>(frame_count)
-    );
-    return ESP_OK;
-}
-
 esp_err_t XiaozhiApp::openAudioChannel()
 {
     XiaozhiClient *protocol = _protocol.load();
@@ -2324,6 +2190,7 @@ esp_err_t XiaozhiApp::openAudioChannel()
 
 esp_err_t XiaozhiApp::startAutoStopTurn(const char *wake_word)
 {
+    if (!ensureEncoder()) return ESP_ERR_NO_MEM;
     esp_err_t ret = openAudioChannel();
     if (ret != ESP_OK) {
         return ret;
@@ -2334,13 +2201,6 @@ esp_err_t XiaozhiApp::startAutoStopTurn(const char *wake_word)
     _tts_active = false;
     _tts_stop_pending.store(false);
     _accept_playback.store(false);
-
-    if (wake_word && wake_word[0]) {
-        ret = sendWakeWordPcm();
-        if (ret != ESP_OK) {
-            return ret;
-        }
-    }
 
     if (!_audio_tx_mutex ||
             xSemaphoreTake(_audio_tx_mutex, portMAX_DELAY) != pdTRUE) {
@@ -2429,6 +2289,12 @@ bool XiaozhiApp::startListening(ListenMode mode, const char *wake_word)
         setState(State::Connecting);
     }
     esp_err_t ret = ESP_OK;
+    if (!ensureEncoder()) {
+        setError(ESP_ERR_NO_MEM, "Prepare Xiaozhi encoder");
+        shutdownAudio();
+        schedulePrepare(RETRY_INTERVAL_MS);
+        return false;
+    }
     if (auto_stop_mode) {
         ret = startAutoStopTurn(wake_word);
     } else {
@@ -2525,7 +2391,6 @@ esp_err_t XiaozhiApp::stopUplink(bool notify_server)
 void XiaozhiApp::cancelManualConversation()
 {
     closeChannel(true);
-    clearConversationUi();
     setState(State::Ready);
     enterReadyAudioMode();
 }
@@ -2570,7 +2435,6 @@ void XiaozhiApp::resetChannelState()
     _drain_event_posted.store(false);
     _restart_transport_after_playback.store(false);
     _listen_mode = ListenMode::None;
-    clearConversationUi();
     resetPlaybackBuffer(false);
 }
 
@@ -2656,7 +2520,6 @@ void XiaozhiApp::handlePlaybackDrained()
         _uplink_started_tick.store(xTaskGetTickCount());
         ESP_UTILS_LOGI("Listening resumed (mode=auto)");
     } else {
-        clearConversationUi();
         _listen_mode = ListenMode::None;
         _awaiting_response = false;
         setState(State::Ready);
@@ -2707,7 +2570,7 @@ bool XiaozhiApp::resetPlaybackBuffer(bool reset_decoder)
     }
     bool ok = true;
     if (reset_decoder) {
-        ok = _opus_decoder &&
+        ok = !_opus_decoder ||
              esp_opus_dec_reset(_opus_decoder) == ESP_AUDIO_ERR_OK;
         if (ok && _output_resampler) {
             ok = esp_ae_rate_cvt_reset(_output_resampler) == ESP_AE_ERR_OK;
@@ -2889,10 +2752,8 @@ void XiaozhiApp::encodeAudio()
     auto *encoded = static_cast<uint8_t *>(malloc(_opus_output_size));
     PcmFrame frame = {};
     uint32_t encode_failures = 0;
-    while (encoded && _audio_tasks_running.load()) {
-        bool preroll = _preroll_active.load();
-        if ((!_voice_enabled.load() && !preroll) ||
-                !_uplink_ready.load()) {
+    while (encoded && _audio_tasks_running.load() && _encoder_enabled.load()) {
+        if (!_voice_enabled.load() || !_uplink_ready.load()) {
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
@@ -2900,9 +2761,7 @@ void XiaozhiApp::encodeAudio()
                 xQueueReceive(_pcm_queue, &frame, pdMS_TO_TICKS(100)) != pdTRUE) {
             continue;
         }
-        preroll = _preroll_active.load();
-        if ((!_voice_enabled.load() && !preroll) ||
-                !_uplink_ready.load()) {
+        if (!_voice_enabled.load() || !_uplink_ready.load()) {
             continue;
         }
         esp_audio_enc_in_frame_t input = {};
@@ -2913,10 +2772,6 @@ void XiaozhiApp::encodeAudio()
         output.len = _opus_output_size;
         if (esp_opus_enc_process(_opus_encoder, &input, &output) !=
                 ESP_AUDIO_ERR_OK || output.encoded_bytes <= 0) {
-            if (preroll) {
-                finishPreroll(ESP_FAIL);
-                continue;
-            }
             ++encode_failures;
             if (encode_failures == 1 || (encode_failures % 50) == 0) {
                 ESP_UTILS_LOGW(
@@ -2931,7 +2786,7 @@ void XiaozhiApp::encodeAudio()
         if (_audio_tx_mutex &&
                 xSemaphoreTake(_audio_tx_mutex, portMAX_DELAY) == pdTRUE) {
             XiaozhiClient *protocol = _protocol.load();
-            if ((_voice_enabled.load() || _preroll_active.load()) &&
+            if (_voice_enabled.load() &&
                     _uplink_ready.load() &&
                     _channel_state.load() == ChannelState::Open && protocol) {
                 attempted_send = true;
@@ -2944,18 +2799,6 @@ void XiaozhiApp::encodeAudio()
             xSemaphoreGive(_audio_tx_mutex);
         }
         if (attempted_send && send_ret == ESP_OK) {
-            if (preroll) {
-                uint32_t remaining = _preroll_frames_remaining.load();
-                while (remaining > 0 &&
-                        !_preroll_frames_remaining.compare_exchange_weak(
-                            remaining, remaining - 1
-                        )) {
-                }
-                if (remaining == 1) {
-                    finishPreroll(ESP_OK);
-                }
-                continue;
-            }
             uint32_t sent = _opus_packets_sent.fetch_add(1) + 1;
             if (sent == 1) {
                 _uplink_started_tick.store(0);
@@ -2969,10 +2812,6 @@ void XiaozhiApp::encodeAudio()
                     static_cast<unsigned long>(sent)
                 );
             }
-        } else if (preroll) {
-            finishPreroll(
-                attempted_send ? send_ret : ESP_ERR_INVALID_STATE
-            );
         } else if (attempted_send) {
             _uplink_ready.store(false);
             _voice_enabled.store(false);
@@ -3003,17 +2842,32 @@ void XiaozhiApp::encodeAudio()
 void XiaozhiApp::playAudio()
 {
     int16_t *server_pcm = nullptr, *device_pcm = nullptr, *stereo = nullptr;
+    size_t server_capacity = 0, device_capacity = 0, stereo_capacity = 0;
     auto release_buffers = [&]() {
         free(server_pcm); free(device_pcm); free(stereo);
         server_pcm = device_pcm = stereo = nullptr;
+        server_capacity = device_capacity = stereo_capacity = 0;
     };
-    auto prepare_buffers = [&]() {
-        if (server_pcm && device_pcm && stereo) return true;
+    auto prepare_buffers = [&](const AudioPacket &audio) {
+        const uint32_t server_samples = uint32_t(audio.sample_rate) * audio.frame_duration_ms / 1000;
+        uint32_t device_samples = server_samples;
+        if (!server_samples || server_samples > MAX_SERVER_PCM_SAMPLES) return false;
+        if (_output_resampler && esp_ae_rate_cvt_get_max_out_sample_num(
+                _output_resampler, server_samples, &device_samples) != ESP_AE_ERR_OK) return false;
+        if (!device_samples || device_samples > MAX_DEVICE_PCM_SAMPLES) return false;
+        const size_t server_bytes = server_samples * sizeof(int16_t);
+        const size_t device_bytes = _output_resampler ? device_samples * sizeof(int16_t) : 0;
+        const size_t stereo_bytes = device_samples * 2 * sizeof(int16_t);
+        if (server_capacity >= server_bytes && device_capacity >= device_bytes &&
+                stereo_capacity >= stereo_bytes) return true;
         release_buffers();
-        server_pcm = static_cast<int16_t *>(malloc(MAX_SERVER_PCM_BYTES));
-        device_pcm = static_cast<int16_t *>(malloc(MAX_DEVICE_PCM_SAMPLES * sizeof(int16_t)));
-        stereo = static_cast<int16_t *>(malloc(MAX_DEVICE_PCM_SAMPLES * 2 * sizeof(int16_t)));
-        if (server_pcm && device_pcm && stereo) return true;
+        server_pcm = static_cast<int16_t *>(malloc(server_bytes));
+        if (device_bytes) device_pcm = static_cast<int16_t *>(malloc(device_bytes));
+        stereo = static_cast<int16_t *>(malloc(stereo_bytes));
+        if (server_pcm && (!device_bytes || device_pcm) && stereo) {
+            server_capacity = server_bytes; device_capacity = device_bytes; stereo_capacity = stereo_bytes;
+            return true;
+        }
         release_buffers();
         return false;
     };
@@ -3021,6 +2875,10 @@ void XiaozhiApp::playAudio()
     uint32_t decode_failures = 0;
     AudioPacket packet = {};
     while (_audio_tasks_running.load()) {
+        if (_playback_release_requested.exchange(false)) {
+            release_buffers();
+            _playback_buffers_released.store(true);
+        }
         if (!_playback_queue ||
                 xQueuePeek(_playback_queue, &packet, pdMS_TO_TICKS(50)) != pdTRUE) {
             if (_state.load() != State::Speaking) release_buffers();
@@ -3048,13 +2906,13 @@ void XiaozhiApp::playAudio()
             }
             if (received && _accept_playback.load() &&
                     packet.turn_generation == _turn_generation.load()) {
-                if (!prepare_buffers()) {
-                    output_error = true;
-                    output_error_code = ESP_ERR_NO_MEM;
-                } else if (!configureDecoder(
+                if (!configureDecoder(
                         packet.sample_rate, packet.frame_duration_ms
                     )) {
                     output_error = true;
+                } else if (!prepare_buffers(packet)) {
+                    output_error = true;
+                    output_error_code = ESP_ERR_NO_MEM;
                 } else {
                     esp_audio_dec_in_raw_t input = {};
                     input.buffer = packet.data;
@@ -3062,14 +2920,14 @@ void XiaozhiApp::playAudio()
                     input.frame_recover = ESP_AUDIO_DEC_RECOVERY_NONE;
                     esp_audio_dec_out_frame_t output = {};
                     output.buffer = reinterpret_cast<uint8_t *>(server_pcm);
-                    output.len = MAX_SERVER_PCM_BYTES;
+                    output.len = server_capacity;
                     esp_audio_dec_info_t info = {};
                     bool opus_ok =
                         esp_opus_dec_decode(
                             _opus_decoder, &input, &output, &info
                         ) == ESP_AUDIO_ERR_OK &&
                         output.decoded_size > 0 &&
-                        output.decoded_size <= MAX_SERVER_PCM_BYTES;
+                        output.decoded_size <= server_capacity;
                     if (opus_ok) {
                         uint32_t server_samples =
                             output.decoded_size / sizeof(int16_t);
@@ -3081,7 +2939,7 @@ void XiaozhiApp::playAudio()
                                     &maximum_samples
                                 ) != ESP_AE_ERR_OK ||
                                     maximum_samples == 0 ||
-                                    maximum_samples > MAX_DEVICE_PCM_SAMPLES) {
+                                    maximum_samples > device_capacity / sizeof(int16_t)) {
                                 output_error = true;
                             } else {
                                 uint32_t actual_samples = maximum_samples;
@@ -3097,8 +2955,8 @@ void XiaozhiApp::playAudio()
                                         &actual_samples
                                     ) == ESP_AE_ERR_OK &&
                                         actual_samples > 0 &&
-                                        actual_samples <=
-                                            MAX_DEVICE_PCM_SAMPLES) {
+                                        actual_samples <= device_capacity / sizeof(int16_t) &&
+                                        actual_samples <= stereo_capacity / (2 * sizeof(int16_t))) {
                                     playback_pcm = device_pcm;
                                     playback_samples = actual_samples;
                                     decoded = true;
@@ -3106,7 +2964,7 @@ void XiaozhiApp::playAudio()
                                     output_error = true;
                                 }
                             }
-                        } else if (server_samples <= MAX_DEVICE_PCM_SAMPLES) {
+                        } else if (server_samples <= stereo_capacity / (2 * sizeof(int16_t))) {
                             playback_pcm = server_pcm;
                             playback_samples = server_samples;
                             decoded = true;

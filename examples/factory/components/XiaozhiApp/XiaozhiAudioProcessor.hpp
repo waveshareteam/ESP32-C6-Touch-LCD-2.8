@@ -29,12 +29,14 @@ public:
     XiaozhiAudioProcessor &operator=(const XiaozhiAudioProcessor &) = delete;
     bool initialize();
     bool shutdown();
+    bool suspendWakeWord();
+    bool resumeWakeWord();
     bool feed(const int16_t *pcm, size_t frames);
     bool enableWakeWord(bool enable);
     bool enableVoiceProcessing(bool enable);
     bool isReady() const { return ready_.load(); }
+    bool hasWakeWord() const { return wake_available_.load(); }
     size_t getFeedFrames() const { return 160; }
-    bool takeWakeWordPcm(std::vector<int16_t> &pcm);
     void setWakeWordCallback(WakeWordCallback callback);
     void setPcmFrameCallback(PcmFrameCallback callback);
     void setVadCallback(VadCallback callback);
@@ -44,7 +46,6 @@ private:
         size_t count;
         int16_t samples[160];
     };
-    static constexpr size_t CACHE_SAMPLES = SAMPLE_RATE;
     static constexpr EventBits_t TASK_EXITED = 1;
     SemaphoreHandle_t lifecycle_mutex_ = nullptr;
     SemaphoreHandle_t state_mutex_ = nullptr;
@@ -57,20 +58,20 @@ private:
     model_iface_data_t *wake_data_ = nullptr;
     std::atomic<bool> ready_{false};
     std::atomic<bool> stopping_{false};
+    std::atomic<bool> wake_available_{false};
     bool wake_enabled_ = false;
     bool voice_enabled_ = false;
     uint32_t generation_ = 0;
     std::vector<int16_t> wake_chunk_;
     size_t chunk_fill_ = 0;
-    std::vector<int16_t> cache_;
-    size_t cache_fill_ = 0;
-    size_t cache_write_ = 0;
     std::array<int16_t, PCM_FRAME_SAMPLES> voice_frame_{};
     size_t voice_fill_ = 0;
     WakeWordCallback wake_callback_;
     PcmFrameCallback pcm_callback_;
     VadCallback vad_callback_;
     void releaseResources();
+    bool loadWakeModel();
+    void releaseWakeModel();
     void processingLoop();
     static void taskEntry(void *arg);
 };

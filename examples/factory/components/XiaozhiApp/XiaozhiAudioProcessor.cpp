@@ -2,6 +2,7 @@
 #include "XiaozhiAudioProcessor.hpp"
 #include <algorithm>
 #include <cstring>
+#include <new>
 #include <utility>
 #include "esp_log.h"
 #include "esp_heap_caps.h"
@@ -12,6 +13,8 @@ namespace esp_brookesia::apps {
 namespace {
 constexpr char TAG[] = "XiaozhiAudio";
 constexpr uint32_t TASK_STACK_BYTES = 6 * 1024;
+// WakeNet9s peaks at about 35 KB before allocator overhead and network traffic.
+constexpr size_t WAKE_INIT_BUDGET = 48 * 1024;
 class Lock {
 public:
     explicit Lock(SemaphoreHandle_t mutex): mutex_(mutex) {
@@ -44,19 +47,6 @@ bool XiaozhiAudioProcessor::initialize()
     Lock lifecycle(lifecycle_mutex_);
     if (ready_.load()) return true;
     stopping_.store(false);
-    models_ = esp_srmodel_init("model");
-    char *name = models_ ? esp_srmodel_filter(models_, ESP_WN_PREFIX, "nihaoxiaozhi") : nullptr;
-    wake_iface_ = name ? esp_wn_handle_from_name(name) : nullptr;
-    wake_data_ = wake_iface_ ? wake_iface_->create(name, DET_MODE_90) : nullptr;
-    if (!wake_data_ || wake_iface_->get_samp_rate(wake_data_) != SAMPLE_RATE ||
-            wake_iface_->get_channel_num(wake_data_) != 1 ||
-            wake_iface_->get_samp_chunksize(wake_data_) <= 0) {
-        ESP_LOGE(TAG, "Cannot load the C6 WakeNet9s model from the model partition");
-        releaseResources();
-        return false;
-    }
-    wake_chunk_.resize(wake_iface_->get_samp_chunksize(wake_data_));
-    cache_.resize(CACHE_SAMPLES);
     input_queue_ = xQueueCreateWithCaps(6, sizeof(InputBlock),
                                       MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     events_ = xEventGroupCreate();
@@ -66,7 +56,7 @@ bool XiaozhiAudioProcessor::initialize()
         releaseResources();
         return false;
     }
-    chunk_fill_ = cache_fill_ = cache_write_ = voice_fill_ = 0;
+    chunk_fill_ = voice_fill_ = 0;
     wake_enabled_ = voice_enabled_ = false;
     ++generation_;
     if (xTaskCreateWithCaps(taskEntry, "xiaozhi_wn9s", TASK_STACK_BYTES, this, 3, &task_,
@@ -78,9 +68,16 @@ bool XiaozhiAudioProcessor::initialize()
         return false;
     }
     ready_.store(true);
-    ESP_LOGI(TAG, "C6 mono WakeNet9s ready: %s, %u samples/chunk; queue=%u bytes and stack=%lu in internal RAM",
-             name, static_cast<unsigned>(wake_chunk_.size()), (unsigned)(6 * sizeof(InputBlock)),
-             static_cast<unsigned long>(TASK_STACK_BYTES));
+    if (!loadWakeModel()) {
+        ready_.store(false);
+        stopping_.store(true);
+        xEventGroupWaitBits(events_, TASK_EXITED, pdFALSE, pdTRUE, portMAX_DELAY);
+        vTaskDelay(1);
+        task_ = nullptr;
+        releaseResources();
+        return false;
+    }
+    ESP_LOGI(TAG, "C6 WakeNet9s ready; encoder remains unloaded until wakeup");
     return true;
 }
 
@@ -90,6 +87,7 @@ bool XiaozhiAudioProcessor::shutdown()
     Lock lifecycle(lifecycle_mutex_);
     if (task_ && xTaskGetCurrentTaskHandle() == task_) return false;
     ready_.store(false);
+    wake_available_.store(false);
     stopping_.store(true);
     /* Exclude any feed that observed the previous ready state. */
     Lock input(input_mutex_);
@@ -106,18 +104,14 @@ bool XiaozhiAudioProcessor::shutdown()
 
 void XiaozhiAudioProcessor::releaseResources()
 {
-    if (wake_data_) wake_iface_->destroy(wake_data_);
-    wake_data_ = nullptr;
-    wake_iface_ = nullptr;
-    if (models_) esp_srmodel_deinit(models_);
-    models_ = nullptr;
+    releaseWakeModel();
     if (input_queue_) vQueueDeleteWithCaps(input_queue_);
     input_queue_ = nullptr;
     if (events_) vEventGroupDelete(events_);
     events_ = nullptr;
     std::vector<int16_t>().swap(wake_chunk_);
-    std::vector<int16_t>().swap(cache_);
     wake_enabled_ = voice_enabled_ = false;
+    wake_available_.store(false);
 }
 
 bool XiaozhiAudioProcessor::feed(const int16_t *pcm, size_t frames)
@@ -140,7 +134,7 @@ bool XiaozhiAudioProcessor::feed(const int16_t *pcm, size_t frames)
             /* Do not splice PCM across a gap if the CPU cannot keep up. */
             Lock state(state_mutex_);
             ++generation_;
-            chunk_fill_ = voice_fill_ = cache_fill_ = cache_write_ = 0;
+            chunk_fill_ = voice_fill_ = 0;
             xQueueReset(input_queue_);
             ESP_LOGW(TAG, "Input queue full; discarded discontinuous PCM (WakeNet model retained)");
             return false;
@@ -155,14 +149,12 @@ bool XiaozhiAudioProcessor::enableWakeWord(bool enable)
 {
     Lock state(state_mutex_);
     if (!ready_.load() || stopping_.load()) return false;
-    /* ESP-SR 2.4.7 WakeNet9s clean() walks nine queues, but create() allocates
-     * only six. Retain the model on start/stop, as upstream EspWakeWord does;
-     * discard partial PCM and reject queued samples from the previous mode. */
+    if (enable && !wake_available_.load()) return false;
+    // Reset PCM generations instead of calling the unsafe library clean().
     if (wake_enabled_ != enable) {
         wake_enabled_ = enable;
         ++generation_;
         chunk_fill_ = 0;
-        if (enable) cache_fill_ = cache_write_ = 0;
         ESP_LOGI(TAG, "Wake word detection %s (model retained; PCM generation=%lu)",
                  enable ? "enabled" : "disabled", static_cast<unsigned long>(generation_));
     }
@@ -182,16 +174,66 @@ bool XiaozhiAudioProcessor::enableVoiceProcessing(bool enable)
     return true;
 }
 
-bool XiaozhiAudioProcessor::takeWakeWordPcm(std::vector<int16_t> &pcm)
+void XiaozhiAudioProcessor::releaseWakeModel()
 {
+    wake_available_.store(false);
+    wake_enabled_ = false;
+    chunk_fill_ = 0;
+    if (wake_data_) wake_iface_->destroy(wake_data_);
+    wake_data_ = nullptr;
+    wake_iface_ = nullptr;
+    if (models_) esp_srmodel_deinit(models_);
+    models_ = nullptr;
+    std::vector<int16_t>().swap(wake_chunk_);
+}
+
+bool XiaozhiAudioProcessor::loadWakeModel()
+{
+    if (wake_data_) return true;
+    // The library dereferences failed allocations; check its measured peak first.
+    void *probe = heap_caps_malloc(WAKE_INIT_BUDGET, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!probe) {
+        ESP_LOGE(TAG, "Wake model budget unavailable: free=%u, largest=%u, required=%u",
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                 (unsigned)WAKE_INIT_BUDGET);
+        return false;
+    }
+    heap_caps_free(probe);
+    models_ = esp_srmodel_init("model");
+    char *name = models_ ? esp_srmodel_filter(models_, ESP_WN_PREFIX, "nihaoxiaozhi") : nullptr;
+    wake_iface_ = name ? esp_wn_handle_from_name(name) : nullptr;
+    wake_data_ = wake_iface_ ? wake_iface_->create(name, DET_MODE_90) : nullptr;
+    if (wake_data_ && wake_iface_->get_samp_rate(wake_data_) == SAMPLE_RATE &&
+            wake_iface_->get_channel_num(wake_data_) == 1 &&
+            wake_iface_->get_samp_chunksize(wake_data_) > 0) {
+        try {
+            wake_chunk_.resize(wake_iface_->get_samp_chunksize(wake_data_));
+            wake_available_.store(true);
+            return true;
+        } catch (const std::bad_alloc &) {
+            ESP_LOGE(TAG, "Wake input buffer allocation failed");
+        }
+    }
+    releaseWakeModel();
+    return false;
+}
+
+bool XiaozhiAudioProcessor::suspendWakeWord()
+{
+    Lock lifecycle(lifecycle_mutex_);
     Lock state(state_mutex_);
-    pcm.clear();
-    if (!ready_.load() || !cache_fill_) return false;
-    pcm.resize(cache_fill_);
-    const size_t start = (cache_write_ + CACHE_SAMPLES - cache_fill_) % CACHE_SAMPLES;
-    for (size_t i = 0; i < cache_fill_; ++i) pcm[i] = cache_[(start + i) % CACHE_SAMPLES];
-    cache_fill_ = cache_write_ = 0;
+    ++generation_;
+    releaseWakeModel();
     return true;
+}
+
+bool XiaozhiAudioProcessor::resumeWakeWord()
+{
+    Lock lifecycle(lifecycle_mutex_);
+    Lock state(state_mutex_);
+    if (!ready_.load() || stopping_.load()) return false;
+    return loadWakeModel();
 }
 
 void XiaozhiAudioProcessor::setWakeWordCallback(WakeWordCallback callback)
@@ -224,9 +266,6 @@ void XiaozhiAudioProcessor::processingLoop()
             for (size_t i = 0; i < block.count; ++i) {
                 const int16_t sample = block.samples[i];
                 if (wake_enabled_) {
-                    cache_[cache_write_] = sample;
-                    cache_write_ = (cache_write_ + 1) % CACHE_SAMPLES;
-                    cache_fill_ = std::min(CACHE_SAMPLES, cache_fill_ + 1);
                     wake_chunk_[chunk_fill_++] = sample;
                     if (chunk_fill_ == wake_chunk_.size()) {
                         chunk_fill_ = 0;

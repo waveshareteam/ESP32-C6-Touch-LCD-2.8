@@ -88,8 +88,6 @@ private:
         ChannelOpened,
         ChannelClosed,
         ServerGoodbye,
-        ChatText,
-        Emotion,
         TtsStart,
         TtsStop,
         PlaybackDrained,
@@ -102,11 +100,10 @@ private:
         ControlEventType type = ControlEventType::NetworkChanged;
         int32_t value = 0;
         esp_err_t error = ESP_OK;
-        uint8_t role = 0;
         bool flag = false;
         uint32_t chat_generation = 0;
         uint32_t turn_generation = 0;
-        char text[512] = {};
+        char text[64] = {};
         char detail[128] = {};
     };
 
@@ -144,7 +141,6 @@ private:
     SemaphoreHandle_t _playback_mutex = nullptr;
     SemaphoreHandle_t _control_ack = nullptr;
     SemaphoreHandle_t _control_exited = nullptr;
-    SemaphoreHandle_t _preroll_done = nullptr;
     QueueHandle_t _control_queue = nullptr;
     QueueHandle_t _pcm_queue = nullptr;
     QueueHandle_t _playback_queue = nullptr;
@@ -172,13 +168,13 @@ private:
     std::atomic<bool> _codec_claimed{false};
     std::atomic<bool> _input_task_running{false};
     std::atomic<bool> _encoder_task_running{false};
+    std::atomic<bool> _encoder_enabled{false};
+    std::atomic<bool> _playback_release_requested{false};
+    std::atomic<bool> _playback_buffers_released{true};
     std::atomic<bool> _playback_task_running{false};
     std::atomic<bool> _capture_enabled{false};
     std::atomic<bool> _voice_enabled{false};
     std::atomic<bool> _uplink_ready{false};
-    std::atomic<bool> _preroll_active{false};
-    std::atomic<uint32_t> _preroll_frames_remaining{0};
-    std::atomic<int> _preroll_result{ESP_OK};
     std::atomic<TickType_t> _uplink_started_tick{0};
     std::atomic<uint32_t> _pcm_frames_captured{0};
     std::atomic<uint32_t> _pcm_frames_dropped{0};
@@ -224,18 +220,12 @@ private:
 
     char _activation_code[64] = {};
     char _activation_message[192] = {};
-    char _chat_role[16] = {};
-    char _chat_text[512] = {};
-    char _emotion[32] = {"neutral"};
 
     void createUi();
     void destroyUi();
     void refreshUi();
     void setState(State state);
     void setError(esp_err_t error, const char *source);
-    void setChatMessage(XiaozhiClient::TextRole role, const char *text);
-    void setEmotion(const char *emotion);
-    void clearConversationUi();
     void copyActivation(const char *code, const char *message);
     void clearActivation();
     bool announceActivation(bool force);
@@ -257,12 +247,13 @@ private:
     void destroyChat();
 
     bool ensureAudioReady();
+    bool ensureEncoder();
+    void stopEncoder();
+    bool releasePlaybackResources();
     bool shutdownAudio();
     bool releaseAudioSession();
     bool setAudioModes(bool wake_word, bool voice);
     bool enterReadyAudioMode();
-    esp_err_t sendWakeWordPcm();
-    void finishPreroll(esp_err_t result);
     bool configureDecoder(uint16_t sample_rate, uint16_t frame_duration_ms);
     esp_err_t openAudioChannel();
     esp_err_t startAutoStopTurn(const char *wake_word = nullptr);
