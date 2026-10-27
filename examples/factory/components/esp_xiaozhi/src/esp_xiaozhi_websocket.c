@@ -193,6 +193,7 @@ static void esp_xiaozhi_websocket_event(void *handler_args, esp_event_base_t bas
     }
 
     case WEBSOCKET_EVENT_ERROR:
+        log_websocket_heap("WebSocket connection error");
         ESP_LOGE(TAG, "WEBSOCKET_EVENT_ERROR");
         break;
 

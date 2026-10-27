@@ -26,7 +26,6 @@ The device supports **2.4 GHz Wi-Fi only** and uses saved credentials first. If 
 | AIChats | Connect and follow the activation prompt. Say “你好小智” or tap **Talk** to start; tap **Stop** to stop. Voice commands can change volume and brightness. No camera tools are included. |
 | Touch Test | Draw anywhere to check the screen edges. Use the top-left return button or BOOT to exit. |
 | GravityBall | Place the board flat for about two seconds to calibrate, then tilt to move the ball across the full screen. BOOT recalibrates. |
-| Photos | Browse SD `/photo` baseline JPG/JPEG (up to 4 megapixels) images; swipe left/right to switch. Use 240 × 320 images for a screen-sized picture. |
 | Weather | Connect Wi-Fi to view online weather and refresh it manually. |
 | Music | Play SD `/music` MP3 files; use previous/next, play/pause and the progress control. |
 | Sensor | View the hardware RTC, QMI8658 motion readings and SHTC3 temperature/humidity. |
@@ -36,9 +35,9 @@ The device supports **2.4 GHz Wi-Fi only** and uses saved credentials first. If 
 
 Outside Display Test, swipe upward from the bottom center to return to the desktop. Music stops when you leave the player; close one audio application before opening another.
 
-## Music and Photos
+## Music
 
-Insert a FAT32 microSD card before startup. Create `/music` for MP3 files and `/photo` for JPG/JPEG images, placing the files directly inside those folders. Reopen Music or Photos after inserting a missing card; the application does not format the card.
+Insert a FAT32 microSD card before startup. Create `/music` for MP3 files and place the files directly inside that folder. Reopen Music after inserting a missing card; the application does not format the card.
 
 Mic Test records up to 10 seconds. Tap Record, speak, then tap Stop and Play to listen; recordings disappear when you leave the application or restart the board. The level meter monitors your voice silently, without live speaker playback.
 
@@ -46,8 +45,7 @@ Mic Test records up to 10 seconds. Tap Record, speak, then tap Stop and Play to 
 
 To reinstall the desktop, follow the [factory firmware instructions](../../firmware/README.md). To upload from source, follow the [project instructions](README.md).
 
-- **No music/photos:** check FAT32 formatting, directory names and file extensions, then reopen the application.
-- **A large photo fails:** resize it to 240 × 320 and save it as JPEG, then reopen Photos.
+- **No music:** check FAT32 formatting, directory names and file extensions, then reopen the application.
 - **Wi-Fi connects but online features fail:** check internet access and the remote service.
 - **Time stays at `--:--`:** check that the network permits SNTP traffic.
 - **Audio is busy:** close the other audio application before retrying.

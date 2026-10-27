@@ -59,5 +59,11 @@ CONFIG_FATFS_FS_LOCK=8
 CONFIG_LWIP_SNTP_MAX_SERVERS=2
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 
-# Stream SD JPEGs without a full-frame SRAM allocation.
-CONFIG_LV_USE_TJPGD=y
+# JPEG decoding is not used by the factory desktop.
+CONFIG_LV_USE_TJPGD=n
+
+# Release TLS record buffers between I/O operations; retain certificate validation.
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
+CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=16384
+CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=2048
+CONFIG_MBEDTLS_SSL_KEEP_PEER_CERTIFICATE=n

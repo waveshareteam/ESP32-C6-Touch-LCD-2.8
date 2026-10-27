@@ -9,7 +9,6 @@
 #include "esp_brookesia.hpp"
 #include "Settings.hpp"
 #include "DrawingBoard.hpp"
-#include "Photos.hpp"
 #include "Weather.hpp"
 #include "Music.hpp"
 #include "Sensor.hpp"
@@ -59,7 +58,6 @@ static bool app_start()
         {"AIChats", AIChats::requestInstance()},
         {"Touch Test", DrawingBoard::requestInstance()},
         {"Ball", Qmi8658Ball::requestInstance()},
-        {"Photos", Photos::requestInstance()},
         {"Weather", Weather::requestInstance()},
         {"Music", Music::requestInstance()},
         {"Sensor", Sensor::requestInstance()},
@@ -67,6 +65,7 @@ static bool app_start()
         {"Mic Test", MicTest::requestInstance()},
         {"Button Test", ButtonTest::requestInstance()},
     };
+    constexpr unsigned expected = sizeof(apps) / sizeof(apps[0]);
     unsigned installed = 0;
     for (const auto &entry : apps) {
         int id = entry.app ? phone->installApp(entry.app) : -1;
@@ -94,11 +93,11 @@ static bool app_start()
                      (unsigned)minimum, (unsigned)CONFIG_BSP_LVGL_TASK_STACK_SIZE);
         }
     }, 5000, nullptr);
-    ESP_LOGI(TAG, "Desktop ready: 240x320, %u/12 APPs; internal free=%u, largest=%u; PSRAM=%u",
-             installed, (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+    ESP_LOGI(TAG, "Desktop ready: 240x320, %u/%u APPs; internal free=%u, largest=%u; PSRAM=%u",
+             installed, expected, (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
-    return installed == 12;
+    return installed == expected;
 }
 extern "C" void app_main()
 {

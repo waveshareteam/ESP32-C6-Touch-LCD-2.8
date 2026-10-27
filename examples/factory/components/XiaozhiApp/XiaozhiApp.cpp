@@ -1139,6 +1139,9 @@ void XiaozhiApp::handleControlEvent(const ControlEvent &event)
         _restart_transport_after_playback.store(false);
         resetChannelState();
         setAudioModes(false, false);
+        // Release codec tasks and buffers before the next TLS handshake.
+        shutdownAudio();
+        logServiceInfoHeap("audio released for transport reconnect");
         if (reconnect_now) {
             ESP_UTILS_LOGI(
                 "Transport closed after server goodbye; reconnecting now"
@@ -1377,6 +1380,7 @@ bool XiaozhiApp::prepareChat()
     const bool was_waiting =
         _activation_phase == ActivationPhase::WaitingForBinding ||
         _activation_phase == ActivationPhase::BoundPendingSuccess;
+    if (_audio_tasks_running.load()) shutdownAudio();
     ScopedXiaozhiInfo service;
     logServiceInfoHeap("before request");
     esp_err_t ret = esp_xiaozhi_chat_get_info(&service.value);
@@ -2998,31 +3002,33 @@ void XiaozhiApp::encodeAudio()
 
 void XiaozhiApp::playAudio()
 {
-    auto *server_pcm = static_cast<int16_t *>(malloc(MAX_SERVER_PCM_BYTES));
-    auto *device_pcm = static_cast<int16_t *>(
-        malloc(MAX_DEVICE_PCM_SAMPLES * sizeof(int16_t))
-    );
-    auto *stereo = static_cast<int16_t *>(
-        malloc(MAX_DEVICE_PCM_SAMPLES * 2 * sizeof(int16_t))
-    );
-    if (!server_pcm || !device_pcm || !stereo) {
-        ControlEvent event = {};
-        event.type = ControlEventType::AudioError;
-        event.error = ESP_ERR_NO_MEM;
-        copyString(event.detail, sizeof(event.detail), "Allocate playback buffers");
-        postControlEvent(event);
-    }
+    int16_t *server_pcm = nullptr, *device_pcm = nullptr, *stereo = nullptr;
+    auto release_buffers = [&]() {
+        free(server_pcm); free(device_pcm); free(stereo);
+        server_pcm = device_pcm = stereo = nullptr;
+    };
+    auto prepare_buffers = [&]() {
+        if (server_pcm && device_pcm && stereo) return true;
+        release_buffers();
+        server_pcm = static_cast<int16_t *>(malloc(MAX_SERVER_PCM_BYTES));
+        device_pcm = static_cast<int16_t *>(malloc(MAX_DEVICE_PCM_SAMPLES * sizeof(int16_t)));
+        stereo = static_cast<int16_t *>(malloc(MAX_DEVICE_PCM_SAMPLES * 2 * sizeof(int16_t)));
+        if (server_pcm && device_pcm && stereo) return true;
+        release_buffers();
+        return false;
+    };
 
     uint32_t decode_failures = 0;
     AudioPacket packet = {};
-    while (server_pcm && device_pcm && stereo &&
-            _audio_tasks_running.load()) {
+    while (_audio_tasks_running.load()) {
         if (!_playback_queue ||
                 xQueuePeek(_playback_queue, &packet, pdMS_TO_TICKS(50)) != pdTRUE) {
+            if (_state.load() != State::Speaking) release_buffers();
             checkPlaybackDrained();
             continue;
         }
         if (_state.load() != State::Speaking) {
+            release_buffers();
             vTaskDelay(pdMS_TO_TICKS(5));
             continue;
         }
@@ -3030,6 +3036,7 @@ void XiaozhiApp::playAudio()
         bool received = false;
         bool decoded = false;
         bool output_error = false;
+        esp_err_t output_error_code = ESP_FAIL;
         size_t playback_samples = 0;
         const int16_t *playback_pcm = nullptr;
         if (_playback_mutex &&
@@ -3041,7 +3048,10 @@ void XiaozhiApp::playAudio()
             }
             if (received && _accept_playback.load() &&
                     packet.turn_generation == _turn_generation.load()) {
-                if (!configureDecoder(
+                if (!prepare_buffers()) {
+                    output_error = true;
+                    output_error_code = ESP_ERR_NO_MEM;
+                } else if (!configureDecoder(
                         packet.sample_rate, packet.frame_duration_ms
                     )) {
                     output_error = true;
@@ -3117,11 +3127,12 @@ void XiaozhiApp::playAudio()
             _accept_playback.store(false);
             ControlEvent event = {};
             event.type = ControlEventType::AudioError;
-            event.error = ESP_FAIL;
+            event.error = output_error_code;
             copyString(
                 event.detail,
                 sizeof(event.detail),
-                "Configure Xiaozhi output audio"
+                output_error_code == ESP_ERR_NO_MEM ?
+                "Allocate Xiaozhi playback buffers" : "Configure Xiaozhi output audio"
             );
             postControlEvent(event);
         } else if (!decoded && _accept_playback.load() &&
@@ -3161,9 +3172,7 @@ void XiaozhiApp::playAudio()
         _playback_busy.store(false);
         checkPlaybackDrained();
     }
-    free(server_pcm);
-    free(device_pcm);
-    free(stereo);
+    release_buffers();
     _playback_busy.store(false);
     _playback_task_running.store(false);
     vTaskDeleteWithCaps(nullptr);

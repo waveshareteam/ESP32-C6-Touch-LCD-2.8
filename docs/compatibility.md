@@ -28,7 +28,7 @@ The BSP pins esp_lvgl_adapter to 0.4.3~1 for the selected v5.5.4 build; its time
 
 ## Factory Memory
 
-The photo viewer decodes JPEG MCU strips into a small RGB565 buffer and fits the whole image on screen. Touch Test uses a two-color indexed canvas. Ten-second microphone recordings use a dedicated 512 KB Flash scratch partition, separate from SD files and settings; recordings are replaced by the next recording.
+Touch Test uses a two-color indexed canvas. Ten-second microphone recordings use a dedicated 512 KB Flash scratch partition, separate from SD files and settings; recordings are replaced by the next recording.
 
 ## Firmware
 
