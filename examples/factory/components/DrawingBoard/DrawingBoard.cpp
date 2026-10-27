@@ -9,6 +9,8 @@
 #include "src/misc/cache/instance/lv_image_cache.h"
 #include <new>
 #include <cstring>
+#include <algorithm>
+#include <cstdlib>
 
 LV_IMAGE_DECLARE(image_draw);
 namespace {
@@ -91,6 +93,7 @@ bool DrawingBoard::run()
     button_presses_ = bsp_user_button_get_press_count();
     exit_timer_ = lv_timer_create(poll_exit, 50, this);
     if (!exit_timer_) { close(); return false; }
+    set_input_speed(true);
     return true;
 }
 
@@ -103,19 +106,57 @@ void DrawingBoard::clear()
     lv_image_cache_drop(&draw_buffer_);
 }
 
+void DrawingBoard::set_input_speed(bool fast)
+{
+    auto *input = bsp_display_get_input_dev();
+    auto *timer = input ? lv_indev_get_read_timer(input) : nullptr;
+    if (!timer) return;
+    if (fast && !input_period_ms_) {
+        // The adapter uses LVGL's default polling period.
+        input_period_ms_ = LV_DEF_REFR_PERIOD;
+        lv_timer_set_period(timer, std::min(input_period_ms_, uint32_t(8)));
+    } else if (!fast && input_period_ms_) {
+        lv_timer_set_period(timer, input_period_ms_);
+        input_period_ms_ = 0;
+    }
+}
+
 void DrawingBoard::draw(const lv_point_t &point)
 {
     if (stroke_ && previous_.x == point.x && previous_.y == point.y) return;
-    for (int dy = -BRUSH / 2; dy < BRUSH / 2; ++dy) {
-        for (int dx = -BRUSH / 2; dx < BRUSH / 2; ++dx) {
-            int x = point.x + dx, y = point.y + dy;
-            if (x < 0 || y < 0 || x >= WIDTH || y >= HEIGHT || dx*dx + dy*dy > 25) continue;
-            uint8_t *row = draw_buffer_.data + 8 + y * draw_buffer_.header.stride;
-            row[x / 8] |= uint8_t(0x80U >> (x % 8));
+    const lv_point_t from = stroke_ ? previous_ : point;
+    auto stamp = [this](int cx, int cy) {
+        for (int dy = -BRUSH / 2; dy < BRUSH / 2; ++dy) {
+            for (int dx = -BRUSH / 2; dx < BRUSH / 2; ++dx) {
+                const int x = cx + dx, y = cy + dy;
+                if (x < 0 || y < 0 || x >= WIDTH || y >= HEIGHT || dx*dx + dy*dy > 25) continue;
+                uint8_t *row = draw_buffer_.data + 8 + y * draw_buffer_.header.stride;
+                row[x / 8] |= uint8_t(0x80U >> (x % 8));
+            }
         }
+    };
+    int x = from.x, y = from.y;
+    const int dx = std::abs(int(point.x) - x), dy = -std::abs(int(point.y) - y);
+    const int sx = x < point.x ? 1 : -1, sy = y < point.y ? 1 : -1;
+    int error = dx + dy;
+    while (true) {
+        stamp(x, y);
+        if (x == point.x && y == point.y) break;
+        const int twice = error * 2;
+        if (twice >= dy) { error += dy; x += sx; }
+        if (twice <= dx) { error += dx; y += sy; }
     }
-    lv_obj_invalidate(canvas_);
+    lv_area_t bounds;
+    lv_obj_get_coords(canvas_, &bounds);
+    const lv_area_t dirty = {
+        bounds.x1 + std::max(0, int(std::min(from.x, point.x)) - BRUSH / 2),
+        bounds.y1 + std::max(0, int(std::min(from.y, point.y)) - BRUSH / 2),
+        bounds.x1 + std::min(WIDTH - 1, int(std::max(from.x, point.x)) + BRUSH / 2),
+        bounds.y1 + std::min(HEIGHT - 1, int(std::max(from.y, point.y)) + BRUSH / 2),
+    };
+    // Refresh only the new stroke; keep the compact indexed canvas.
     lv_image_cache_drop(&draw_buffer_);
+    lv_obj_invalidate_area(canvas_, &dirty);
     previous_ = point;
     stroke_ = true;
 }
@@ -154,6 +195,7 @@ void DrawingBoard::poll_exit(lv_timer_t *timer)
 bool DrawingBoard::back() { stroke_ = false; return notifyCoreClosed(); }
 bool DrawingBoard::close()
 {
+    set_input_speed(false);
     stroke_ = false;
     if (exit_timer_) { lv_timer_delete(exit_timer_); exit_timer_ = nullptr; }
     if (root_) lv_obj_delete(root_);
@@ -167,12 +209,14 @@ bool DrawingBoard::close()
 bool DrawingBoard::deinit() { return close(); }
 bool DrawingBoard::pause()
 {
+    set_input_speed(false);
     stroke_ = false;
     if (exit_timer_) lv_timer_pause(exit_timer_);
     return true;
 }
 bool DrawingBoard::resume()
 {
+    set_input_speed(true);
     stroke_ = false;
     button_presses_ = bsp_user_button_get_press_count();
     if (exit_timer_) lv_timer_resume(exit_timer_);

@@ -21,10 +21,12 @@ private:
     static void back_event(lv_event_t *event);
     static void poll_exit(lv_timer_t *timer);
     void clear();
+    void set_input_speed(bool fast);
     void draw(const lv_point_t &point);
     lv_obj_t *root_ = nullptr, *canvas_ = nullptr;
     lv_timer_t *exit_timer_ = nullptr;
     uint32_t button_presses_ = 0;
+    uint32_t input_period_ms_ = 0;
     uint8_t *pixels_ = nullptr;
     lv_draw_buf_t draw_buffer_ = {};
     lv_point_t previous_ = {};
