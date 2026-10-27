@@ -205,10 +205,12 @@ private:
 
     char _activation_code[64] = {};
     char _activation_message[192] = {};
+    char _subtitle_text[512] = {};
 
     void createUi();
     void destroyUi();
     void refreshUi();
+    void updateSubtitle(uint32_t generation, XiaozhiClient::TextRole role, const std::string &text);
     void setState(State state);
     void setError(esp_err_t error, const char *source);
     void copyActivation(const char *code, const char *message);

@@ -13,12 +13,14 @@ public:
     void destroy();
     void setNetworkReady(bool ready);
     void setStatus(const char *status);
+    void setSubtitle(const char *subtitle);
     void setActionEnabled(bool enabled);
     void setActivation(const char *code, const char *message, bool visible);
     lv_obj_t *root() const { return _root; }
 private:
     lv_obj_t *_root = nullptr, *_network = nullptr, *_status = nullptr;
     lv_obj_t *_action = nullptr;
+    lv_obj_t *_subtitle_area = nullptr, *_subtitle = nullptr;
     lv_obj_t *_activation = nullptr, *_code = nullptr, *_instruction = nullptr;
     ActionCallback _action_callback = nullptr;
     void *_context = nullptr;

@@ -631,17 +631,20 @@ void XiaozhiApp::refreshUi()
     }
     char code[sizeof(_activation_code)] = {};
     char message[sizeof(_activation_message)] = {};
+    char subtitle[sizeof(_subtitle_text)] = {};
     if (!_state_mutex ||
             xSemaphoreTake(_state_mutex, pdMS_TO_TICKS(20)) != pdTRUE) {
         return;
     }
     memcpy(code, _activation_code, sizeof(code));
     memcpy(message, _activation_message, sizeof(message));
+    memcpy(subtitle, _subtitle_text, sizeof(subtitle));
     xSemaphoreGive(_state_mutex);
 
     State state = _state.load();
     _ui->setNetworkReady(_network_ready.load());
     _ui->setStatus(stateText(state));
+    _ui->setSubtitle(subtitle);
     const bool talking = state == State::Listening || state == State::Processing || state == State::Speaking;
     _ui->setActionEnabled(talking || state == State::Ready);
     _ui->setActivation(
@@ -651,6 +654,34 @@ void XiaozhiApp::refreshUi()
         ),
         state == State::ActivationRequired
     );
+}
+
+void XiaozhiApp::updateSubtitle(
+    uint32_t generation, XiaozhiClient::TextRole role, const std::string &value
+)
+{
+    ScopedLifecycleAdmission lifecycle_user(_lifecycle_refs);
+    if (!lifecycle_user || value.empty()) return;
+    ScopedOptionalCounter async_user(&_async_post_users);
+    ScopedSemaphoreLock lock(_state_mutex, pdMS_TO_TICKS(20));
+    if (!lock || generation != _chat_generation.load() ||
+            _shutdown.load() || !_visible.load()) return;
+
+    // Keep only the current sentence and never split a UTF-8 character.
+    const char *prefix = role == XiaozhiClient::TextRole::User ? "You: " : "Xiaozhi: ";
+    const size_t prefix_size = strlen(prefix);
+    const size_t capacity = sizeof(_subtitle_text) - prefix_size - 1;
+    const bool truncated = value.size() > capacity;
+    size_t count = truncated ? capacity - 3 : value.size();
+    while (count < value.size() && count > 0 &&
+            (static_cast<unsigned char>(value[count]) & 0xC0) == 0x80) --count;
+    memcpy(_subtitle_text, prefix, prefix_size);
+    memcpy(_subtitle_text + prefix_size, value.data(), count);
+    if (truncated) {
+        memcpy(_subtitle_text + prefix_size + count, "...", 3);
+        count += 3;
+    }
+    _subtitle_text[prefix_size + count] = '\0';
 }
 
 void XiaozhiApp::setState(State state)
@@ -1422,6 +1453,11 @@ bool XiaozhiApp::prepareChat()
             }
         }
         post_simple(ControlEventType::ServerGoodbye);
+    };
+    callbacks.onText = [this, client_generation](
+        XiaozhiClient::TextRole role, const std::string &value
+    ) {
+        updateSubtitle(client_generation, role, value);
     };
     callbacks.onTts = [this, client_generation](
         XiaozhiClient::TtsState state,

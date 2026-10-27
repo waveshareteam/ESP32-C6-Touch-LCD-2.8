@@ -16,7 +16,7 @@ Start the [factory desktop](../../README.md), connect Wi-Fi in Settings and open
 
 ## Expected Result
 
-The speaker plays Xiaozhi's reply while the screen shows a static smile and the current status. Try saying “把音量调到80” or “把亮度调到50” to adjust volume or brightness; swipe up from the bottom center to return to the desktop.
+The speaker plays Xiaozhi's reply while the screen shows a static smile, the current status and subtitles. Your recognized speech and Xiaozhi's reply appear at the bottom; swipe within the text area to read a longer sentence. Try saying “把音量调到80” or “把亮度调到50” to adjust volume or brightness; swipe up from the bottom center to return to the desktop.
 
 ## Troubleshooting
 

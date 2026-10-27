@@ -62,6 +62,13 @@ bool XiaozhiUi::create(lv_obj_t *parent, ActionCallback action, void *context)
     lv_obj_add_flag(_action, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(_action, onAction, LV_EVENT_CLICKED, this);
 
+    _subtitle_area = box(_root, 8, 210, 224, 94);
+    lv_obj_add_flag(_subtitle_area, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(_subtitle_area, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(_subtitle_area, LV_SCROLLBAR_MODE_AUTO);
+    _subtitle = label(_subtitle_area, "", 4, 0, 216, &font_puhui_16_4);
+    lv_obj_set_style_text_align(_subtitle, LV_TEXT_ALIGN_CENTER, 0);
+
     _activation = box(_root, 8, 60, 224, 210);
     auto *activation_title = label(_activation, "DEVICE ACTIVATION", 0, 4, 224, &lv_font_montserrat_14);
     lv_obj_set_style_text_align(activation_title, LV_TEXT_ALIGN_CENTER, 0);
@@ -78,10 +85,15 @@ void XiaozhiUi::destroy()
     if (_root) lv_obj_delete(_root);
     _root = _network = _status = nullptr;
     _action = nullptr;
+    _subtitle_area = _subtitle = nullptr;
     _activation = _code = _instruction = nullptr;
 }
 void XiaozhiUi::setNetworkReady(bool ready) { text(_network, ready ? LV_SYMBOL_WIFI : ""); }
 void XiaozhiUi::setStatus(const char *value) { text(_status, value); }
+void XiaozhiUi::setSubtitle(const char *value)
+{
+    if (text(_subtitle, value)) lv_obj_scroll_to_y(_subtitle_area, 0, LV_ANIM_OFF);
+}
 void XiaozhiUi::setActionEnabled(bool enabled)
 {
     if (!_action) return;
@@ -93,6 +105,7 @@ void XiaozhiUi::setActivation(const char *code, const char *message, bool visibl
     if (!_activation) return;
     text(_code, code); text(_instruction, message);
     hidden(_activation, !visible);
+    hidden(_subtitle_area, visible);
 }
 void XiaozhiUi::onAction(lv_event_t *event)
 {
