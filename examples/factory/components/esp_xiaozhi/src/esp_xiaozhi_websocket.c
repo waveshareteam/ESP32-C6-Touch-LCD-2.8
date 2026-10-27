@@ -35,11 +35,13 @@ enum { WEBSOCKET_STACK_BYTES = 4096 };
 
 static void log_websocket_heap(const char *stage)
 {
-    ESP_LOGI(TAG, "%s: internal free=%u, largest=%u; PSRAM free=%u; task stack=%u (internal)",
+    ESP_LOGI(TAG, "%s: internal free=%u, largest=%u; DMA free=%u, largest=%u; RTC free=%u; task stack=%u (internal)",
              stage,
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
-             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_RTCRAM),
              (unsigned)WEBSOCKET_STACK_BYTES);
 }
 

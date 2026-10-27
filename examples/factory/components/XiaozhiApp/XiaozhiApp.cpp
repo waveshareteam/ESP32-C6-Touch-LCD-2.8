@@ -74,14 +74,17 @@ constexpr size_t MAX_DEVICE_PCM_SAMPLES =
 void logServiceInfoHeap(const char *context)
 {
     ESP_UTILS_LOGI(
-        "Service info heap (%s): internal free=%u, largest=%u",
+        "Service info heap (%s): internal free=%u, largest=%u; DMA free=%u, largest=%u; RTC free=%u",
         context,
         static_cast<unsigned int>(
             heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)
         ),
         static_cast<unsigned int>(
             heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)
-        )
+        ),
+        static_cast<unsigned int>(heap_caps_get_free_size(MALLOC_CAP_DMA)),
+        static_cast<unsigned int>(heap_caps_get_largest_free_block(MALLOC_CAP_DMA)),
+        static_cast<unsigned int>(heap_caps_get_free_size(MALLOC_CAP_RTCRAM))
     );
 }
 
@@ -2401,6 +2404,8 @@ void XiaozhiApp::encodeAudioFrame(const int16_t *pcm, size_t count)
             count != XiaozhiAudioProcessor::PCM_FRAME_SAMPLES ||
             !_opus_encoder || !_encoded_frame) return;
 
+    const uint32_t chat_generation = _chat_generation.load();
+    const uint32_t turn_generation = _turn_generation.load();
     uint32_t captured = _pcm_frames_captured.fetch_add(1) + 1;
     if (captured == 1) ESP_UTILS_LOGI("Captured first conversation PCM frame (20 ms)");
     esp_audio_enc_in_frame_t input = {};
@@ -2414,6 +2419,8 @@ void XiaozhiApp::encodeAudioFrame(const int16_t *pcm, size_t count)
         ControlEvent event = {};
         event.type = ControlEventType::AudioError;
         event.error = ESP_FAIL;
+        event.chat_generation = chat_generation;
+        event.turn_generation = turn_generation;
         copyString(event.detail, sizeof(event.detail), "Encode Xiaozhi audio");
         _uplink_ready.store(false);
         postControlEvent(event);
@@ -2439,14 +2446,18 @@ void XiaozhiApp::encodeAudioFrame(const int16_t *pcm, size_t count)
                            output.encoded_bytes, (unsigned)uxTaskGetStackHighWaterMark(nullptr));
         }
     } else {
+        // A failed send can return after disconnect cleanup has ended this turn.
+        if (!_uplink_ready.load() || !_audio_tasks_running.load() ||
+                chat_generation != _chat_generation.load() ||
+                turn_generation != _turn_generation.load()) return;
         _uplink_ready.store(false);
         _voice_enabled.store(false);
         _capture_enabled.store(false);
         ControlEvent event = {};
         event.type = ControlEventType::ChatError;
         event.error = ret;
-        event.chat_generation = _chat_generation.load();
-        event.turn_generation = _turn_generation.load();
+        event.chat_generation = chat_generation;
+        event.turn_generation = turn_generation;
         copyString(event.detail, sizeof(event.detail), "Send Xiaozhi audio data");
         postControlEvent(event);
     }

@@ -7,6 +7,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <esp_log.h>
 #include <esp_check.h>
 #include <cJSON.h>
@@ -43,6 +44,13 @@ typedef struct esp_xiaozhi_mcp_item_s {
 } esp_xiaozhi_mcp_item_t;
 
 static const char *TAG = "ESP_XIAOZHI_MCP";
+enum { MCP_WORKER_STACK_BYTES = 12 * 1024 };
+#if CONFIG_IDF_TARGET_ESP32C6 && CONFIG_ESP_SYSTEM_ALLOW_RTC_FAST_MEM_AS_HEAP
+// RTC is internal and cache-safe; keep ordinary SRAM available for LCD/I2S DMA.
+static const uint32_t mcp_stack_caps = MALLOC_CAP_RTCRAM | MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+#else
+static const uint32_t mcp_stack_caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+#endif
 
 static esp_xiaozhi_mcp_item_t *s_xiaozhi_mcp = NULL;
 
@@ -54,6 +62,54 @@ static esp_xiaozhi_mcp_item_t *esp_xiaozhi_mcp_get_item_by_mgr_handle(esp_mcp_mg
     }
 
     return NULL;
+}
+
+// The manager returns serialized JSON; wrap its bytes without a second tree.
+static char *product_mcp_wrap_response(const uint8_t *payload, size_t payload_len,
+                                       const char *session_id)
+{
+    static const char prefix[] = "{\"type\":\"mcp\",\"payload\":";
+    static const char session_prefix[] = "{\"session_id\":\"";
+    static const char session_suffix[] = "\",\"type\":\"mcp\",\"payload\":";
+    static const char hex[] = "0123456789abcdef";
+    size_t escaped_len = 0;
+    if (session_id) {
+        for (const unsigned char *src = (const unsigned char *)session_id; *src; ++src) {
+            const size_t width = *src < 0x20 ? 6 : (*src == '"' || *src == '\\' ? 2 : 1);
+            if (escaped_len > SIZE_MAX - width) return NULL;
+            escaped_len += width;
+        }
+    }
+    const size_t prefix_len = session_id ? sizeof(session_prefix) - 1 : sizeof(prefix) - 1;
+    const size_t suffix_len = session_id ? sizeof(session_suffix) - 1 : 0;
+    const size_t overhead = prefix_len + suffix_len + 2;
+    if (!payload || !payload_len || payload_len > SIZE_MAX - overhead ||
+        escaped_len > SIZE_MAX - overhead - payload_len) return NULL;
+    char *json = malloc(overhead + escaped_len + payload_len);
+    if (!json) return NULL;
+    char *dst = json;
+    memcpy(dst, session_id ? session_prefix : prefix, prefix_len);
+    dst += prefix_len;
+    if (session_id) {
+        for (const unsigned char *src = (const unsigned char *)session_id; *src; ++src) {
+            if (*src < 0x20) {
+                memcpy(dst, "\\u00", 4);
+                dst[4] = hex[*src >> 4];
+                dst[5] = hex[*src & 0x0f];
+                dst += 6;
+            } else {
+                if (*src == '"' || *src == '\\') *dst++ = '\\';
+                *dst++ = (char)*src;
+            }
+        }
+        memcpy(dst, session_suffix, suffix_len);
+        dst += suffix_len;
+    }
+    memcpy(dst, payload, payload_len);
+    dst += payload_len;
+    *dst++ = '}';
+    *dst = '\0';
+    return json;
 }
 
 static esp_err_t product_mcp_process_message(esp_mcp_mgr_handle_t mgr_handle,
@@ -92,27 +148,18 @@ static esp_err_t product_mcp_process_message(esp_mcp_mgr_handle_t mgr_handle,
     // The engine also returns JSON-RPC error responses with a non-OK status.
     // Deliver them so the server can report the error instead of waiting forever.
     if (outbuf && outlen > 0 && atomic_load(&mcp_item->accepting)) {
-        cJSON *response_root = cJSON_CreateObject();
-        if (session_id) {
-            cJSON_AddStringToObject(response_root, "session_id", session_id);
-        }
-        cJSON_AddStringToObject(response_root, "type", "mcp");
-        cJSON *response_payload = cJSON_Parse((char *)outbuf);
-        if (response_payload) {
-            cJSON_AddItemToObject(response_root, "payload", response_payload);
-            char *json_str = cJSON_PrintUnformatted(response_root);
-            if (json_str) {
-                const esp_err_t sent = esp_xiaozhi_transport_send_text(mcp_item->transport_handle, json_str);
-                if (sent != ESP_OK) ESP_LOGW(TAG, "MCP response send failed: %s", esp_err_to_name(sent));
-                else if (initializing && ret == ESP_OK) ESP_LOGI(TAG, "MCP initialize reply sent");
-                cJSON_free(json_str);
-            } else {
-                ESP_LOGE(TAG, "Failed to print MCP response");
-            }
+        char *json_str = product_mcp_wrap_response(outbuf, outlen, session_id);
+        // Release the manager's copy before TLS allocates its send buffers.
+        esp_mcp_mgr_req_destroy_response(mgr_handle, outbuf);
+        outbuf = NULL;
+        if (json_str) {
+            const esp_err_t sent = esp_xiaozhi_transport_send_text(mcp_item->transport_handle, json_str);
+            if (sent != ESP_OK) ESP_LOGW(TAG, "MCP response send failed: %s", esp_err_to_name(sent));
+            else if (initializing && ret == ESP_OK) ESP_LOGI(TAG, "MCP initialize reply sent");
+            free(json_str);
         } else {
-            ESP_LOGE(TAG, "Failed to parse MCP response payload");
+            ESP_LOGE(TAG, "Failed to allocate MCP response envelope");
         }
-        cJSON_Delete(response_root);
     }
     if (ret != ESP_OK && ret != ESP_ERR_NOT_FOUND) {
         ESP_LOGW(TAG, "Failed to process MCP message: %s", esp_err_to_name(ret));
@@ -125,8 +172,11 @@ static esp_err_t product_mcp_process_message(esp_mcp_mgr_handle_t mgr_handle,
 static void product_mcp_worker(void *arg)
 {
     esp_xiaozhi_mcp_item_t *item = arg;
-    ESP_LOGI(TAG, "MCP worker: stack=%s, size=12288 bytes",
-             esp_ptr_internal(pxTaskGetStackStart(NULL)) ? "internal RAM" : "external RAM");
+    ESP_LOGI(TAG, "MCP worker: stack=%s, size=%u bytes; DMA free=%u, largest=%u",
+             esp_ptr_in_rtc_dram_fast(pxTaskGetStackStart(NULL)) ? "RTC RAM" : "internal SRAM",
+             (unsigned)MCP_WORKER_STACK_BYTES,
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA));
     product_mcp_request_t *request;
     while (xQueueReceive(item->requests, &request, portMAX_DELAY) == pdTRUE && request) {
         atomic_store(&item->busy, true);
@@ -196,13 +246,12 @@ static esp_err_t esp_xiaozhi_mcp_init(esp_mcp_mgr_handle_t handle, esp_mcp_trans
     atomic_init(&mcp_item->accepting, false);
     atomic_init(&mcp_item->busy, false);
     if (!mcp_item->requests || !mcp_item->worker_done ||
-        xTaskCreateWithCaps(product_mcp_worker, "xiaozhi_mcp", 12288, mcp_item, 3, NULL,
-                            // MCP tools read NVS/Flash (vision Device-Id/UUID).
-                            // Their stack must remain accessible with cache off.
-                            MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) != pdPASS) {
-        ESP_LOGE(TAG, "MCP worker allocation failed: internal free=%u, largest=%u, stack=12288",
-                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+        xTaskCreateWithCaps(product_mcp_worker, "xiaozhi_mcp", MCP_WORKER_STACK_BYTES,
+                            mcp_item, 3, NULL, mcp_stack_caps) != pdPASS) {
+        ESP_LOGE(TAG, "MCP worker allocation failed: stack=%u, caps=0x%x, free=%u, largest=%u",
+                 (unsigned)MCP_WORKER_STACK_BYTES, (unsigned)mcp_stack_caps,
+                 (unsigned)heap_caps_get_free_size(mcp_stack_caps),
+                 (unsigned)heap_caps_get_largest_free_block(mcp_stack_caps));
         if (mcp_item->requests) vQueueDelete(mcp_item->requests);
         if (mcp_item->worker_done) vSemaphoreDelete(mcp_item->worker_done);
         esp_xiaozhi_transport_deinit(mcp_item->transport_handle);
