@@ -109,6 +109,10 @@ extern "C" void app_main()
     if (!settings_service_start()) ESP_LOGE(TAG, "Settings worker unavailable");
     if (!wifi_manager_init()) ESP_LOGE(TAG, "Network worker unavailable");
     if (!app_start()) ESP_LOGE(TAG, "Some desktop APPs failed; check preceding errors");
+    ESP_LOGI(TAG, "First-frame refresh: task=%s, stack budget=%u bytes",
+             pcTaskGetName(nullptr), (unsigned)CONFIG_ESP_MAIN_TASK_STACK_SIZE);
     ret = bsp_display_show();
     if (ret != ESP_OK) ESP_LOGE(TAG, "First frame: %s", esp_err_to_name(ret));
+    ESP_LOGI(TAG, "Main stack after first frame: minimum free=%u bytes",
+             (unsigned)uxTaskGetStackHighWaterMark(nullptr));
 }
