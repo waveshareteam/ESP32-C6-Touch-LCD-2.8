@@ -106,7 +106,7 @@ bool XiaozhiAudioProcessor::feed(const int16_t *pcm, size_t frames)
                 }
             }
         }
-        // Mode changes wait for this producer before deleting its output queue.
+        // Mode changes wait for this producer before releasing its codec resources.
         if (wake_cb && !stopping_.load()) wake_cb(word);
         if (have_frame && pcm_cb && !stopping_.load()) pcm_cb(frame.data(), frame.size());
         pcm += count;

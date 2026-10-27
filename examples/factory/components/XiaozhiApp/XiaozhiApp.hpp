@@ -10,7 +10,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "esp_ae_rate_cvt.h"
 #include "esp_event.h"
 #include "XiaozhiClient.hpp"
 #include "XiaozhiAudioProcessor.hpp"
@@ -108,10 +107,6 @@ private:
         char detail[128] = {};
     };
 
-    struct PcmFrame {
-        int16_t samples[XiaozhiAudioProcessor::PCM_FRAME_SAMPLES];
-    };
-
     struct AudioPacket {
         uint32_t turn_generation;
         uint32_t timestamp;
@@ -122,10 +117,8 @@ private:
     };
 
     static constexpr int CONTROL_TASK_STACK_SIZE = 12 * 1024;
-    static constexpr int INPUT_TASK_STACK_SIZE = 6 * 1024;
-    // 20-ms Opus tests use 18.4 KB; retain room for PCM, TLS and RTOS frames.
-    static constexpr int ENCODER_TASK_STACK_SIZE = 24 * 1024;
-    static constexpr int PLAYBACK_TASK_STACK_SIZE = 12 * 1024;
+    // One preallocated stack serves capture, wake, encode and playback.
+    static constexpr int INPUT_TASK_STACK_SIZE = 24 * 1024;
     static constexpr size_t AFE_INPUT_CHANNELS = 1;
 
     static XiaozhiApp *_instance;
@@ -144,13 +137,10 @@ private:
     SemaphoreHandle_t _control_ack = nullptr;
     SemaphoreHandle_t _control_exited = nullptr;
     QueueHandle_t _control_queue = nullptr;
-    QueueHandle_t _pcm_queue = nullptr;
     QueueHandle_t _playback_queue = nullptr;
 
     TaskHandle_t _control_task = nullptr;
     TaskHandle_t _input_task = nullptr;
-    TaskHandle_t _encoder_task = nullptr;
-    TaskHandle_t _playback_task = nullptr;
 
     esp_event_handler_instance_t _ip_event_instance = nullptr;
 
@@ -169,10 +159,8 @@ private:
     std::atomic<bool> _audio_session_acquired{false};
     std::atomic<bool> _codec_claimed{false};
     std::atomic<bool> _input_task_running{false};
-    std::atomic<bool> _encoder_task_running{false};
-    std::atomic<bool> _encoder_enabled{false};
     std::atomic<bool> _playback_enabled{false};
-    std::atomic<bool> _playback_task_running{false};
+    std::atomic<bool> _playback_active{false};
     std::atomic<bool> _capture_enabled{false};
     std::atomic<bool> _voice_enabled{false};
     std::atomic<bool> _uplink_ready{false};
@@ -208,12 +196,11 @@ private:
     ActivationPhase _activation_phase = ActivationPhase::CheckRequired;
     TickType_t _next_prepare_tick = 0;
 
+    uint8_t *_encoded_frame = nullptr;
     void *_opus_encoder = nullptr;
     void *_opus_decoder = nullptr;
-    esp_ae_rate_cvt_handle_t _output_resampler = nullptr;
     int _opus_input_size = 0;
     int _opus_output_size = 0;
-    int _decoder_sample_rate = 0;
     int _decoder_frame_duration_ms = 0;
 
     char _activation_code[64] = {};
@@ -269,15 +256,13 @@ private:
     bool waitForPlaybackIdle(uint32_t timeout_ms) const;
 
     void inputAudio();
-    void encodeAudio();
+    void encodeAudioFrame(const int16_t *pcm, size_t count);
     void playAudio();
 
     static const char *stateText(State state);
     static bool tickReached(TickType_t now, TickType_t target);
     static void controlTaskEntry(void *arg);
     static void inputTaskEntry(void *arg);
-    static void encoderTaskEntry(void *arg);
-    static void playbackTaskEntry(void *arg);
     static void ipEventHandler(
         void *arg,
         esp_event_base_t event_base,

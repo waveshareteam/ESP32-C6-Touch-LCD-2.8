@@ -12,7 +12,7 @@ The board, a connected speaker and Wi-Fi with internet access; use the onboard m
 
 ## How to Run
 
-Start the [factory desktop](../../README.md), connect Wi-Fi in Settings and open **AIChats**. Follow the on-screen activation instructions on first use, then say “你好小智” or tap **Talk** to start; tap **Stop** to stop.
+Start the [factory desktop](../../README.md), connect Wi-Fi in Settings and open **AIChats**. Follow the on-screen activation instructions on first use, then say “你好小智” to start. You can also tap the smile to start or stop a conversation.
 
 ## Expected Result
 

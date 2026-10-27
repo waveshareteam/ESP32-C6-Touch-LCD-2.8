@@ -23,7 +23,7 @@ The device supports **2.4 GHz Wi-Fi only** and uses saved credentials first. If 
 | --- | --- |
 | Display Test | Cycles red, green, blue, yellow and white, one second each. Double-tap anywhere to exit. |
 | Settings | Adjust brightness and volume; open Wi-Fi scan/setup, SD card information or About. The top-left arrow returns to Settings from a subpage, or to the desktop from Settings. |
-| AIChats | Connect and follow the activation prompt. Say “你好小智” or tap **Talk** to start; tap **Stop** to stop. Voice commands can change volume and brightness. No camera tools are included. |
+| AIChats | Connect and follow the activation prompt. Say “你好小智” to start, or tap the smile to start or stop. Voice commands can change volume and brightness. No camera tools are included. |
 | Touch Test | Draw anywhere to check the screen edges. Use the top-left return button or BOOT to exit. |
 | GravityBall | Place the board flat for about two seconds to calibrate, then tilt to move the ball across the full screen. BOOT recalibrates. |
 | Weather | Connect Wi-Fi to view online weather and refresh it manually. |

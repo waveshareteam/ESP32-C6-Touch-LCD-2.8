@@ -56,7 +56,6 @@ constexpr uint32_t CONTROL_EVENT_POST_TIMEOUT_MS = 100;
 constexpr uint32_t LIFECYCLE_WAIT_MS = 10000;
 constexpr uint32_t PLAYBACK_IDLE_WAIT_MS = 1000;
 constexpr size_t CONTROL_QUEUE_LENGTH = 8;
-constexpr size_t PCM_QUEUE_LENGTH = 3;
 constexpr size_t PLAYBACK_QUEUE_LENGTH = 4;
 constexpr size_t DEVICE_TDM_CHANNELS = CODEC_VOICE_INPUT_CHANNELS;
 constexpr size_t DEVICE_MIC1_SLOT = 0;
@@ -65,12 +64,9 @@ static_assert(
     "C6 2.8 has one ES8311 microphone"
 );
 constexpr size_t INPUT_READ_FRAMES = DEVICE_AUDIO_SAMPLE_RATE / 100;
-constexpr size_t MAX_SERVER_SAMPLE_RATE = 48000;
 constexpr size_t MAX_SERVER_FRAME_DURATION_MS = 120;
-constexpr size_t MAX_SERVER_PCM_SAMPLES =
-    MAX_SERVER_SAMPLE_RATE * MAX_SERVER_FRAME_DURATION_MS / 1000;
 constexpr size_t MAX_DEVICE_PCM_SAMPLES =
-    DEVICE_AUDIO_SAMPLE_RATE * MAX_SERVER_FRAME_DURATION_MS / 1000 + 256;
+    DEVICE_AUDIO_SAMPLE_RATE * MAX_SERVER_FRAME_DURATION_MS / 1000;
 
 void logServiceInfoHeap(const char *context)
 {
@@ -351,9 +347,9 @@ bool XiaozhiApp::init()
             !_control_exited || !_control_queue) {
         ESP_UTILS_LOGE(
             "Xiaozhi allocation handles: state=%p lifecycle=%p audio_tx=%p "
-            "ack=%p exited=%p control=%p pcm=%p playback=%p",
+            "ack=%p exited=%p control=%p playback=%p",
             _state_mutex, _lifecycle_mutex, _audio_tx_mutex, _control_ack,
-            _control_exited, _control_queue, _pcm_queue, _playback_queue
+            _control_exited, _control_queue, _playback_queue
         );
         logServiceInfoHeap("synchronization allocation failed");
         const char *failed = !_state_mutex ? "state mutex" :
@@ -521,10 +517,6 @@ bool XiaozhiApp::deinit()
         vQueueDeleteWithCaps(_playback_queue);
         _playback_queue = nullptr;
     }
-    if (_pcm_queue) {
-        vQueueDeleteWithCaps(_pcm_queue);
-        _pcm_queue = nullptr;
-    }
     if (_control_queue) {
         vQueueDeleteWithCaps(_control_queue);
         _control_queue = nullptr;
@@ -609,12 +601,10 @@ void XiaozhiApp::createUi()
     lv_obj_set_style_bg_opa(_page_root, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_clear_flag(_page_root, LV_OBJ_FLAG_SCROLLABLE);
 
-    // Use wrapped subtitles so longer server replies remain readable.
-    if (!_ui->create(_page_root, uiActionCallback, this, true)) {
+    if (!_ui->create(_page_root, uiActionCallback, this)) {
         destroyUi();
         return;
     }
-    _ui->setBackCallback([](void *context) { static_cast<XiaozhiApp *>(context)->back(); });
     _ui_timer = lv_timer_create(uiTimerCallback, 200, this);
     refreshUi();
 }
@@ -653,7 +643,7 @@ void XiaozhiApp::refreshUi()
     _ui->setNetworkReady(_network_ready.load());
     _ui->setStatus(stateText(state));
     const bool talking = state == State::Listening || state == State::Processing || state == State::Speaking;
-    _ui->setAction(talking ? "Stop" : "Talk", talking || state == State::Ready);
+    _ui->setActionEnabled(talking || state == State::Ready);
     _ui->setActivation(
         code,
         message[0] ? message : xiaozhiUiText(
@@ -1641,76 +1631,8 @@ bool XiaozhiApp::ensureAudioReady()
         }
     });
     _audio_processor->setPcmFrameCallback(
-        [this](const int16_t *pcm, size_t sample_count) {
-            if (!_capture_enabled.load() || !_voice_enabled.load() ||
-                    !_uplink_ready.load() || !_pcm_queue || !pcm ||
-                    sample_count != XiaozhiAudioProcessor::PCM_FRAME_SAMPLES) {
-                return;
-            }
-            uint32_t peak = 0;
-            uint32_t absolute_sum = 0;
-            for (size_t i = 0; i < sample_count; ++i) {
-                int32_t value = pcm[i];
-                uint32_t magnitude = static_cast<uint32_t>(
-                    value < 0 ? -value : value
-                );
-                peak = magnitude > peak ? magnitude : peak;
-                absolute_sum += magnitude;
-            }
-            _pcm_peak.store(peak);
-            _pcm_mean_abs.store(absolute_sum / sample_count);
-
-            PcmFrame frame = {};
-            memcpy(frame.samples, pcm, sizeof(frame.samples));
-            BaseType_t queued = xQueueSend(_pcm_queue, &frame, 0);
-            if (queued != pdTRUE) {
-                // Reuse the frame when discarding old PCM to keep the callback
-                // stack bounded; restore the new samples before retrying.
-                if (xQueueReceive(_pcm_queue, &frame, 0) == pdTRUE) {
-                    memcpy(frame.samples, pcm, sizeof(frame.samples));
-                    queued = xQueueSend(_pcm_queue, &frame, 0);
-                }
-                if (_voice_enabled.load() && _uplink_ready.load()) {
-                    uint32_t dropped = _pcm_frames_dropped.fetch_add(1) + 1;
-                    if (dropped == 1 || (dropped % 20) == 0) {
-                        ESP_UTILS_LOGW(
-                            "Xiaozhi PCM queue overflow; dropped %lu frame(s)",
-                            static_cast<unsigned long>(dropped)
-                        );
-                    }
-                }
-            }
-            if (queued == pdTRUE && _voice_enabled.load()) {
-                uint32_t captured = _pcm_frames_captured.fetch_add(1) + 1;
-                if (captured == 1) {
-                    ESP_UTILS_LOGI(
-                        "Captured first conversation PCM frame (20 ms)"
-                    );
-                }
-            }
-        }
+        [this](const int16_t *pcm, size_t count) { encodeAudioFrame(pcm, count); }
     );
-    _audio_processor->setVadCallback([this](bool speaking) {
-        if (_voice_enabled.load()) {
-            const unsigned int queued = _pcm_queue ?
-                static_cast<unsigned int>(uxQueueMessagesWaiting(_pcm_queue)) :
-                0;
-            ESP_UTILS_LOGI(
-                "Local VAD: speech %s (pcm=%lu, opus=%lu, queued=%u, "
-                "mic24_peak=%lu, mic24_mean=%lu, afe_peak=%lu, "
-                "afe_mean=%lu, uplink=%d)",
-                speaking ? "started" : "stopped",
-                static_cast<unsigned long>(_pcm_frames_captured.load()),
-                static_cast<unsigned long>(_opus_packets_sent.load()),
-                queued,
-                static_cast<unsigned long>(_input_pcm_peak.load()),
-                static_cast<unsigned long>(_input_pcm_mean_abs.load()),
-                static_cast<unsigned long>(_pcm_peak.load()),
-                static_cast<unsigned long>(_pcm_mean_abs.load()),
-                _uplink_ready.load()
-            );
-        }
-    });
 
     _audio_tasks_running.store(true);
     ESP_UTILS_LOGI(
@@ -1725,10 +1647,10 @@ bool XiaozhiApp::ensureAudioReady()
     _input_task_running.store(true);
     if (xTaskCreatePinnedToCore(
             inputTaskEntry,
-            "xiaozhi_input",
+            "xiaozhi_audio",
             INPUT_TASK_STACK_SIZE,
             this,
-            8,
+            5,
             &_input_task,
             0
         ) != pdPASS) {
@@ -1737,7 +1659,7 @@ bool XiaozhiApp::ensureAudioReady()
         shutdownAudio();
         return false;
     }
-    // Reserve the shared capture/inference task before loading the wake model.
+    // Reserve one capture/wake/Opus stack before loading the wake model.
     vTaskDelay(1);
     logServiceInfoHeap("before audio processor initialization");
     if (!_audio_processor || !_audio_processor->initialize()) {
@@ -1750,14 +1672,11 @@ bool XiaozhiApp::ensureAudioReady()
 
 bool XiaozhiApp::ensureEncoder()
 {
-    if (_encoder_task_running.load() && _opus_encoder) return true;
+    if (_opus_encoder && _encoded_frame) return true;
     if (!setAudioModes(false, false)) return false;
     if (!_audio_processor || !_audio_processor->suspendWakeWord() || !releasePlaybackResources()) return false;
     stopEncoder();
-    _pcm_queue = xQueueCreateWithCaps(PCM_QUEUE_LENGTH, sizeof(PcmFrame),
-                                     MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    if (!_pcm_queue) return false;
-    logServiceInfoHeap("wake model released before encoder");
+    logServiceInfoHeap("wake model released; audio worker stack already reserved");
     esp_opus_enc_config_t enc = ESP_OPUS_ENC_CONFIG_DEFAULT();
     enc.sample_rate = CHAT_SAMPLE_RATE;
     enc.channel = ESP_AUDIO_MONO;
@@ -1774,73 +1693,41 @@ bool XiaozhiApp::ensureEncoder()
             esp_opus_enc_get_frame_size(
                 _opus_encoder, &_opus_input_size, &_opus_output_size
             ) != ESP_AUDIO_ERR_OK ||
-            _opus_input_size != static_cast<int>(sizeof(PcmFrame::samples))) {
+            _opus_input_size != XiaozhiAudioProcessor::PCM_FRAME_SAMPLES * sizeof(int16_t) ||
+            _opus_output_size <= 0) {
         setError(ESP_FAIL, "Open OPUS encoder");
         stopEncoder();
         return false;
     }
-
-    _encoder_enabled.store(true);
-    _encoder_task_running.store(true);
-    if (xTaskCreatePinnedToCoreWithCaps(
-            encoderTaskEntry,
-            "xiaozhi_encoder",
-            ENCODER_TASK_STACK_SIZE,
-            this,
-            2,
-            &_encoder_task,
-            0,
-            MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT
-        ) != pdPASS) {
-        _encoder_task_running.store(false);
-        setError(ESP_ERR_NO_MEM, "Create Xiaozhi encoder task");
-        _encoder_enabled.store(false);
+    _encoded_frame = static_cast<uint8_t *>(malloc(_opus_output_size));
+    if (!_encoded_frame) {
+        setError(ESP_ERR_NO_MEM, "Allocate OPUS output buffer");
         stopEncoder();
         return false;
     }
-    vTaskDelay(1);
-    logServiceInfoHeap("audio encoder ready");
+    logServiceInfoHeap("Opus ready on shared audio worker");
     return true;
 }
 
 void XiaozhiApp::stopEncoder()
 {
+    // This producer barrier also waits for an in-flight encode/send callback.
     setAudioModes(false, false);
-    _encoder_enabled.store(false);
-    if (_encoder_task_running.load() && _pcm_queue) {
-        PcmFrame stop = {};
-        // Unblock an idle encoder immediately so incoming reply packets can play.
-        (void)xQueueSend(_pcm_queue, &stop, 0);
-    }
-    while (_encoder_task_running.load()) vTaskDelay(pdMS_TO_TICKS(10));
-    _encoder_task = nullptr;
     if (_opus_encoder) esp_opus_enc_close(_opus_encoder);
     _opus_encoder = nullptr;
+    free(_encoded_frame);
+    _encoded_frame = nullptr;
     _opus_input_size = _opus_output_size = 0;
-    if (_pcm_queue) vQueueDeleteWithCaps(_pcm_queue);
-    _pcm_queue = nullptr;
-    vTaskDelay(1);
 }
 
 bool XiaozhiApp::startPlayback()
 {
-    if (_playback_task_running.load()) return true;
-    {
-        ScopedSemaphoreLock lock(_playback_mutex, portMAX_DELAY);
-        if (!lock) return false;
-        if (!_playback_queue) _playback_queue = xQueueCreateWithCaps(
-            PLAYBACK_QUEUE_LENGTH, sizeof(AudioPacket), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-        if (!_playback_queue) return false;
-    }
+    ScopedSemaphoreLock lock(_playback_mutex, portMAX_DELAY);
+    if (!lock) return false;
+    if (!_playback_queue) _playback_queue = xQueueCreateWithCaps(
+        PLAYBACK_QUEUE_LENGTH, sizeof(AudioPacket), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!_playback_queue) return false;
     _playback_enabled.store(true);
-    _playback_task_running.store(true);
-    if (xTaskCreatePinnedToCoreWithCaps(playbackTaskEntry, "xiaozhi_playback",
-            PLAYBACK_TASK_STACK_SIZE, this, 6, &_playback_task, 0,
-            MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) != pdPASS) {
-        _playback_task_running.store(false);
-        _playback_enabled.store(false);
-        return false;
-    }
     return true;
 }
 
@@ -1849,15 +1736,12 @@ bool XiaozhiApp::releasePlaybackResources()
     _accept_playback.store(false);
     if (!resetPlaybackBuffer(false) || !waitForPlaybackIdle(PLAYBACK_IDLE_WAIT_MS)) return false;
     _playback_enabled.store(false);
-    while (_playback_task_running.load()) vTaskDelay(pdMS_TO_TICKS(5));
-    _playback_task = nullptr;
-    vTaskDelay(1);
+    while (_playback_active.load()) vTaskDelay(pdMS_TO_TICKS(5));
     ScopedSemaphoreLock lock(_playback_mutex, portMAX_DELAY);
     if (!lock) return false;
     if (_opus_decoder) esp_opus_dec_close(_opus_decoder);
-    if (_output_resampler) esp_ae_rate_cvt_close(_output_resampler);
-    _opus_decoder = _output_resampler = nullptr;
-    _decoder_sample_rate = _decoder_frame_duration_ms = 0;
+    _opus_decoder = nullptr;
+    _decoder_frame_duration_ms = 0;
     if (_playback_queue) vQueueDeleteWithCaps(_playback_queue);
     _playback_queue = nullptr;
     return true;
@@ -1868,15 +1752,12 @@ bool XiaozhiApp::shutdownAudio()
     setAudioModes(false, false);
     _accept_playback.store(false);
     _audio_tasks_running.store(false);
-    _encoder_enabled.store(false);
     _playback_enabled.store(false);
-    while (_input_task_running.load() || _encoder_task_running.load() ||
-            _playback_task_running.load()) {
+    while (_input_task_running.load() ||
+            _playback_active.load()) {
         vTaskDelay(pdMS_TO_TICKS(10));
     }
     _input_task = nullptr;
-    _encoder_task = nullptr;
-    _playback_task = nullptr;
     if (_audio_processor) {
         _audio_processor->shutdown();
     }
@@ -1890,10 +1771,6 @@ bool XiaozhiApp::shutdownAudio()
             esp_opus_dec_close(_opus_decoder);
             _opus_decoder = nullptr;
         }
-        if (_output_resampler) {
-            esp_ae_rate_cvt_close(_output_resampler);
-            _output_resampler = nullptr;
-        }
         if (_playback_queue) {
             xQueueReset(_playback_queue);
         }
@@ -1903,17 +1780,12 @@ bool XiaozhiApp::shutdownAudio()
             esp_opus_dec_close(_opus_decoder);
             _opus_decoder = nullptr;
         }
-        if (_output_resampler) {
-            esp_ae_rate_cvt_close(_output_resampler);
-            _output_resampler = nullptr;
-        }
     }
+    free(_encoded_frame);
+    _encoded_frame = nullptr;
     _opus_input_size = 0;
     _opus_output_size = 0;
-    _decoder_sample_rate = 0;
     _decoder_frame_duration_ms = 0;
-    if (_pcm_queue) vQueueDeleteWithCaps(_pcm_queue);
-    _pcm_queue = nullptr;
     {
         ScopedSemaphoreLock lock(_playback_mutex, portMAX_DELAY);
         if (_playback_queue) vQueueDeleteWithCaps(_playback_queue);
@@ -1967,10 +1839,6 @@ bool XiaozhiApp::setAudioModes(bool wake_word, bool voice)
             wake_word = false;
             voice = false;
         }
-    }
-    if (_pcm_queue && (!voice || !success)) {
-        xQueueReset(_pcm_queue);
-        _pcm_frames_dropped.store(0);
     }
     _voice_enabled.store(voice && success);
     _capture_enabled.store((wake_word || voice) && success);
@@ -2056,8 +1924,7 @@ bool XiaozhiApp::configureDecoder(
         return false;
     }
 
-    if (_opus_decoder && _decoder_sample_rate == sample_rate &&
-            _decoder_frame_duration_ms == frame_duration_ms) {
+    if (_opus_decoder && _decoder_frame_duration_ms == frame_duration_ms) {
         return true;
     }
 
@@ -2065,15 +1932,11 @@ bool XiaozhiApp::configureDecoder(
         esp_opus_dec_close(_opus_decoder);
         _opus_decoder = nullptr;
     }
-    if (_output_resampler) {
-        esp_ae_rate_cvt_close(_output_resampler);
-        _output_resampler = nullptr;
-    }
-    _decoder_sample_rate = 0;
     _decoder_frame_duration_ms = 0;
 
     esp_opus_dec_cfg_t decoder_config = ESP_OPUS_DEC_CONFIG_DEFAULT();
-    decoder_config.sample_rate = sample_rate;
+    // Opus packets support native decoding at any supported output rate.
+    decoder_config.sample_rate = DEVICE_AUDIO_SAMPLE_RATE;
     decoder_config.channel = ESP_AUDIO_MONO;
     decoder_config.frame_duration = frame_duration;
     decoder_config.self_delimited = false;
@@ -2089,37 +1952,9 @@ bool XiaozhiApp::configureDecoder(
         return false;
     }
 
-    if (sample_rate != DEVICE_AUDIO_SAMPLE_RATE) {
-        esp_ae_rate_cvt_cfg_t resampler_config = {};
-        resampler_config.src_rate = sample_rate;
-        resampler_config.dest_rate = DEVICE_AUDIO_SAMPLE_RATE;
-        resampler_config.channel = ESP_AUDIO_MONO;
-        resampler_config.bits_per_sample = ESP_AUDIO_BIT16;
-        resampler_config.complexity = 2;
-        resampler_config.perf_type = ESP_AE_RATE_CVT_PERF_TYPE_SPEED;
-        auto resampler_ret = esp_ae_rate_cvt_open(
-            &resampler_config, &_output_resampler
-        );
-        if (resampler_ret != ESP_AE_ERR_OK || !_output_resampler) {
-            ESP_UTILS_LOGE(
-                "Open Xiaozhi output resampler failed: %d",
-                static_cast<int>(resampler_ret)
-            );
-            esp_opus_dec_close(_opus_decoder);
-            _opus_decoder = nullptr;
-            _output_resampler = nullptr;
-            return false;
-        }
-    }
-
-    _decoder_sample_rate = sample_rate;
     _decoder_frame_duration_ms = frame_duration_ms;
-    ESP_UTILS_LOGI(
-        "Xiaozhi output configured: %u Hz, %u ms%s",
-        static_cast<unsigned int>(sample_rate),
-        static_cast<unsigned int>(frame_duration_ms),
-        sample_rate == DEVICE_AUDIO_SAMPLE_RATE ? "" : ", resampled to 16000 Hz"
-    );
+    ESP_UTILS_LOGI("Xiaozhi output: Opus decoded directly at %u Hz, %u ms",
+                   (unsigned)DEVICE_AUDIO_SAMPLE_RATE, (unsigned)frame_duration_ms);
     return true;
 }
 
@@ -2234,9 +2069,6 @@ bool XiaozhiApp::startListening(ListenMode mode, const char *wake_word)
     _pcm_mean_abs.store(0);
     _input_pcm_peak.store(0);
     _input_pcm_mean_abs.store(0);
-    if (_pcm_queue) {
-        xQueueReset(_pcm_queue);
-    }
     if (!resetPlaybackBuffer(true) ||
             !waitForPlaybackIdle(PLAYBACK_IDLE_WAIT_MS)) {
         closeChannel(true);
@@ -2291,9 +2123,6 @@ bool XiaozhiApp::startListening(ListenMode mode, const char *wake_word)
     _pcm_mean_abs.store(0);
     _input_pcm_peak.store(0);
     _input_pcm_mean_abs.store(0);
-    if (_pcm_queue) {
-        xQueueReset(_pcm_queue);
-    }
     if (!setAudioModes(false, true)) {
         closeChannel(true);
         shutdownAudio();
@@ -2454,9 +2283,6 @@ void XiaozhiApp::handlePlaybackDrained()
         _pcm_mean_abs.store(0);
         _input_pcm_peak.store(0);
         _input_pcm_mean_abs.store(0);
-        if (_pcm_queue) {
-            xQueueReset(_pcm_queue);
-        }
 
         esp_err_t ret = startAutoStopTurn();
         if (ret != ESP_OK) {
@@ -2534,9 +2360,6 @@ bool XiaozhiApp::resetPlaybackBuffer(bool reset_decoder)
     if (reset_decoder) {
         ok = !_opus_decoder ||
              esp_opus_dec_reset(_opus_decoder) == ESP_AUDIO_ERR_OK;
-        if (ok && _output_resampler) {
-            ok = esp_ae_rate_cvt_reset(_output_resampler) == ESP_AE_ERR_OK;
-        }
     }
     xSemaphoreGive(_playback_mutex);
     return ok;
@@ -2561,6 +2384,13 @@ void XiaozhiApp::inputAudio()
     int16_t mono[INPUT_READ_FRAMES] = {};
     uint32_t failures = 0;
     while (_audio_tasks_running.load()) {
+        if (_playback_enabled.load()) {
+            _playback_active.store(true);
+            // Recheck after publishing activity so teardown can safely join.
+            if (_playback_enabled.load() && _audio_tasks_running.load()) playAudio();
+            _playback_active.store(false);
+            continue;
+        }
         if (!_capture_enabled.load()) {
             vTaskDelay(pdMS_TO_TICKS(20));
             continue;
@@ -2585,133 +2415,90 @@ void XiaozhiApp::inputAudio()
             ESP_UTILS_LOGW("Microphone read failed: %s", esp_err_to_name(ret));
         }
     }
-    ESP_UTILS_LOGI("Capture/inference stack minimum free=%u bytes",
+    ESP_UTILS_LOGI("Shared audio worker stack minimum free=%u bytes",
                    (unsigned)uxTaskGetStackHighWaterMark(nullptr));
     _input_task_running.store(false);
     vTaskDelete(nullptr);
 }
 
-void XiaozhiApp::encodeAudio()
+void XiaozhiApp::encodeAudioFrame(const int16_t *pcm, size_t count)
 {
-    auto *encoded = static_cast<uint8_t *>(malloc(_opus_output_size));
-    PcmFrame frame = {};
-    uint32_t encode_failures = 0;
-    while (encoded && _audio_tasks_running.load() && _encoder_enabled.load()) {
-        if (!_voice_enabled.load() || !_uplink_ready.load()) {
-            vTaskDelay(pdMS_TO_TICKS(10));
-            continue;
-        }
-        if (!_pcm_queue ||
-                xQueueReceive(_pcm_queue, &frame, pdMS_TO_TICKS(100)) != pdTRUE) {
-            continue;
-        }
-        if (!_voice_enabled.load() || !_uplink_ready.load()) {
-            continue;
-        }
-        esp_audio_enc_in_frame_t input = {};
-        input.buffer = reinterpret_cast<uint8_t *>(frame.samples);
-        input.len = sizeof(frame.samples);
-        esp_audio_enc_out_frame_t output = {};
-        output.buffer = encoded;
-        output.len = _opus_output_size;
-        if (esp_opus_enc_process(_opus_encoder, &input, &output) !=
-                ESP_AUDIO_ERR_OK || output.encoded_bytes <= 0) {
-            ++encode_failures;
-            if (encode_failures == 1 || (encode_failures % 50) == 0) {
-                ESP_UTILS_LOGW(
-                    "OPUS encode failed or returned no data (count=%lu)",
-                    static_cast<unsigned long>(encode_failures)
-                );
-            }
-            continue;
-        }
-        esp_err_t send_ret = ESP_OK;
-        bool attempted_send = false;
-        if (_audio_tx_mutex &&
-                xSemaphoreTake(_audio_tx_mutex, portMAX_DELAY) == pdTRUE) {
-            XiaozhiClient *protocol = _protocol.load();
-            if (_voice_enabled.load() &&
-                    _uplink_ready.load() &&
-                    _channel_state.load() == ChannelState::Open && protocol) {
-                attempted_send = true;
-                send_ret = protocol->sendAudio(
-                    encoded,
-                    static_cast<size_t>(output.encoded_bytes),
-                    0
-                );
-            }
-            xSemaphoreGive(_audio_tx_mutex);
-        }
-        if (attempted_send && send_ret == ESP_OK) {
-            uint32_t sent = _opus_packets_sent.fetch_add(1) + 1;
-            if (sent == 1) {
-                _uplink_started_tick.store(0);
-                ESP_UTILS_LOGI(
-                    "Sent Opus packet #%lu (%d bytes)",
-                    static_cast<unsigned long>(sent), output.encoded_bytes
-                );
-                ESP_UTILS_LOGI("Encoder stack minimum free=%u bytes",
-                               (unsigned)uxTaskGetStackHighWaterMark(nullptr));
-            } else if ((sent % 500) == 0) {
-                ESP_UTILS_LOGD(
-                    "Sent Opus packet #%lu",
-                    static_cast<unsigned long>(sent)
-                );
-            }
-        } else if (attempted_send) {
-            _uplink_ready.store(false);
-            _voice_enabled.store(false);
-            _capture_enabled.store(false);
-            ControlEvent event = {};
-            event.type = ControlEventType::ChatError;
-            event.error = send_ret;
-            event.chat_generation = _chat_generation.load();
-            event.turn_generation = _turn_generation.load();
-            copyString(
-                event.detail, sizeof(event.detail), "Send Xiaozhi audio data"
-            );
-            postControlEvent(event);
-        }
-    }
-    if (!encoded) {
+    if (!_audio_tasks_running.load() || !_capture_enabled.load() ||
+            !_voice_enabled.load() || !_uplink_ready.load() || !pcm ||
+            count != XiaozhiAudioProcessor::PCM_FRAME_SAMPLES ||
+            !_opus_encoder || !_encoded_frame) return;
+
+    uint32_t captured = _pcm_frames_captured.fetch_add(1) + 1;
+    if (captured == 1) ESP_UTILS_LOGI("Captured first conversation PCM frame (20 ms)");
+    esp_audio_enc_in_frame_t input = {};
+    input.buffer = reinterpret_cast<uint8_t *>(const_cast<int16_t *>(pcm));
+    input.len = count * sizeof(int16_t);
+    esp_audio_enc_out_frame_t output = {};
+    output.buffer = _encoded_frame;
+    output.len = _opus_output_size;
+    if (esp_opus_enc_process(_opus_encoder, &input, &output) != ESP_AUDIO_ERR_OK ||
+            output.encoded_bytes <= 0) {
         ControlEvent event = {};
         event.type = ControlEventType::AudioError;
-        event.error = ESP_ERR_NO_MEM;
-        copyString(event.detail, sizeof(event.detail), "Allocate OPUS output buffer");
+        event.error = ESP_FAIL;
+        copyString(event.detail, sizeof(event.detail), "Encode Xiaozhi audio");
+        _uplink_ready.store(false);
+        postControlEvent(event);
+        return;
+    }
+
+    esp_err_t ret = ESP_ERR_INVALID_STATE;
+    {
+        ScopedSemaphoreLock lock(_audio_tx_mutex, pdMS_TO_TICKS(1000));
+        XiaozhiClient *protocol = _protocol.load();
+        if (lock && _voice_enabled.load() && _uplink_ready.load() &&
+                _channel_state.load() == ChannelState::Open && protocol) {
+            ret = protocol->sendAudio(_encoded_frame, output.encoded_bytes, 0);
+        } else if (!_voice_enabled.load() || !_uplink_ready.load()) {
+            return;
+        }
+    }
+    if (ret == ESP_OK) {
+        uint32_t sent = _opus_packets_sent.fetch_add(1) + 1;
+        if (sent == 1) {
+            _uplink_started_tick.store(0);
+            ESP_UTILS_LOGI("Sent Opus packet #1 (%d bytes); shared audio stack minimum free=%u bytes",
+                           output.encoded_bytes, (unsigned)uxTaskGetStackHighWaterMark(nullptr));
+        }
+    } else {
+        _uplink_ready.store(false);
+        _voice_enabled.store(false);
+        _capture_enabled.store(false);
+        ControlEvent event = {};
+        event.type = ControlEventType::ChatError;
+        event.error = ret;
+        event.chat_generation = _chat_generation.load();
+        event.turn_generation = _turn_generation.load();
+        copyString(event.detail, sizeof(event.detail), "Send Xiaozhi audio data");
         postControlEvent(event);
     }
-    free(encoded);
-    _encoder_task_running.store(false);
-    vTaskDeleteWithCaps(nullptr);
 }
 
 void XiaozhiApp::playAudio()
 {
-    int16_t *server_pcm = nullptr, *device_pcm = nullptr, *stereo = nullptr;
-    size_t server_capacity = 0, device_capacity = 0, stereo_capacity = 0;
+    int16_t *mono = nullptr, *stereo = nullptr;
+    size_t mono_capacity = 0, stereo_capacity = 0;
     auto release_buffers = [&]() {
-        free(server_pcm); free(device_pcm); free(stereo);
-        server_pcm = device_pcm = stereo = nullptr;
-        server_capacity = device_capacity = stereo_capacity = 0;
+        free(mono); free(stereo);
+        mono = stereo = nullptr;
+        mono_capacity = stereo_capacity = 0;
     };
     auto prepare_buffers = [&](const AudioPacket &audio) {
-        const uint32_t server_samples = uint32_t(audio.sample_rate) * audio.frame_duration_ms / 1000;
-        uint32_t device_samples = server_samples;
-        if (!server_samples || server_samples > MAX_SERVER_PCM_SAMPLES) return false;
-        if (_output_resampler && esp_ae_rate_cvt_get_max_out_sample_num(
-                _output_resampler, server_samples, &device_samples) != ESP_AE_ERR_OK) return false;
-        if (!device_samples || device_samples > MAX_DEVICE_PCM_SAMPLES) return false;
-        const size_t server_bytes = server_samples * sizeof(int16_t);
-        const size_t device_bytes = _output_resampler ? device_samples * sizeof(int16_t) : 0;
-        const size_t stereo_bytes = device_samples * 2 * sizeof(int16_t);
-        if (server_capacity >= server_bytes && device_capacity >= device_bytes &&
-                stereo_capacity >= stereo_bytes) return true;
+        const size_t samples = DEVICE_AUDIO_SAMPLE_RATE * audio.frame_duration_ms / 1000;
+        if (!samples || samples > MAX_DEVICE_PCM_SAMPLES) return false;
+        const size_t mono_bytes = samples * sizeof(int16_t);
+        const size_t stereo_bytes = mono_bytes * 2;
+        if (mono_capacity >= mono_bytes && stereo_capacity >= stereo_bytes) return true;
         release_buffers();
-        server_pcm = static_cast<int16_t *>(malloc(server_bytes));
-        if (device_bytes) device_pcm = static_cast<int16_t *>(malloc(device_bytes));
+        mono = static_cast<int16_t *>(malloc(mono_bytes));
         stereo = static_cast<int16_t *>(malloc(stereo_bytes));
-        if (server_pcm && (!device_bytes || device_pcm) && stereo) {
-            server_capacity = server_bytes; device_capacity = device_bytes; stereo_capacity = stereo_bytes;
+        if (mono && stereo) {
+            mono_capacity = mono_bytes; stereo_capacity = stereo_bytes;
             return true;
         }
         release_buffers();
@@ -2761,54 +2548,19 @@ void XiaozhiApp::playAudio()
                     input.len = packet.size;
                     input.frame_recover = ESP_AUDIO_DEC_RECOVERY_NONE;
                     esp_audio_dec_out_frame_t output = {};
-                    output.buffer = reinterpret_cast<uint8_t *>(server_pcm);
-                    output.len = server_capacity;
+                    output.buffer = reinterpret_cast<uint8_t *>(mono);
+                    output.len = mono_capacity;
                     esp_audio_dec_info_t info = {};
                     bool opus_ok =
                         esp_opus_dec_decode(
                             _opus_decoder, &input, &output, &info
                         ) == ESP_AUDIO_ERR_OK &&
                         output.decoded_size > 0 &&
-                        output.decoded_size <= server_capacity;
+                        output.decoded_size <= mono_capacity;
                     if (opus_ok) {
-                        uint32_t server_samples =
-                            output.decoded_size / sizeof(int16_t);
-                        if (_output_resampler) {
-                            uint32_t maximum_samples = 0;
-                            if (esp_ae_rate_cvt_get_max_out_sample_num(
-                                    _output_resampler,
-                                    server_samples,
-                                    &maximum_samples
-                                ) != ESP_AE_ERR_OK ||
-                                    maximum_samples == 0 ||
-                                    maximum_samples > device_capacity / sizeof(int16_t)) {
-                                output_error = true;
-                            } else {
-                                uint32_t actual_samples = maximum_samples;
-                                if (esp_ae_rate_cvt_process(
-                                        _output_resampler,
-                                        reinterpret_cast<esp_ae_sample_t>(
-                                            server_pcm
-                                        ),
-                                        server_samples,
-                                        reinterpret_cast<esp_ae_sample_t>(
-                                            device_pcm
-                                        ),
-                                        &actual_samples
-                                    ) == ESP_AE_ERR_OK &&
-                                        actual_samples > 0 &&
-                                        actual_samples <= device_capacity / sizeof(int16_t) &&
-                                        actual_samples <= stereo_capacity / (2 * sizeof(int16_t))) {
-                                    playback_pcm = device_pcm;
-                                    playback_samples = actual_samples;
-                                    decoded = true;
-                                } else {
-                                    output_error = true;
-                                }
-                            }
-                        } else if (server_samples <= stereo_capacity / (2 * sizeof(int16_t))) {
-                            playback_pcm = server_pcm;
-                            playback_samples = server_samples;
+                        playback_samples = output.decoded_size / sizeof(int16_t);
+                        if (playback_samples <= stereo_capacity / (2 * sizeof(int16_t))) {
+                            playback_pcm = mono;
                             decoded = true;
                         } else {
                             output_error = true;
@@ -2874,8 +2626,6 @@ void XiaozhiApp::playAudio()
     }
     release_buffers();
     _playback_busy.store(false);
-    _playback_task_running.store(false);
-    vTaskDeleteWithCaps(nullptr);
 }
 
 const char *XiaozhiApp::stateText(State state)
@@ -2916,16 +2666,6 @@ void XiaozhiApp::controlTaskEntry(void *arg)
 void XiaozhiApp::inputTaskEntry(void *arg)
 {
     static_cast<XiaozhiApp *>(arg)->inputAudio();
-}
-
-void XiaozhiApp::encoderTaskEntry(void *arg)
-{
-    static_cast<XiaozhiApp *>(arg)->encodeAudio();
-}
-
-void XiaozhiApp::playbackTaskEntry(void *arg)
-{
-    static_cast<XiaozhiApp *>(arg)->playAudio();
 }
 
 void XiaozhiApp::ipEventHandler(

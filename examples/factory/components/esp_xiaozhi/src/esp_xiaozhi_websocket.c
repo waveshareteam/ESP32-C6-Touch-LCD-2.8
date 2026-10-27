@@ -342,7 +342,7 @@ esp_err_t esp_xiaozhi_websocket_send_binary(esp_xiaozhi_websocket_handle_t handl
     ESP_RETURN_ON_FALSE(websocket->websocket_client, ESP_ERR_INVALID_STATE, TAG, "Websocket client not initialized");
     ESP_RETURN_ON_FALSE(websocket->websocket_connected, ESP_ERR_INVALID_STATE, TAG, "Websocket is not connected");
 
-    int sent = esp_websocket_client_send_bin(websocket->websocket_client, (const char *)data, data_len, portMAX_DELAY);
+    int sent = esp_websocket_client_send_bin(websocket->websocket_client, (const char *)data, data_len, pdMS_TO_TICKS(1000));
     if (sent < 0) {
         websocket->websocket_connected = false;
         if (websocket->callbacks.on_disconnected_callback) {

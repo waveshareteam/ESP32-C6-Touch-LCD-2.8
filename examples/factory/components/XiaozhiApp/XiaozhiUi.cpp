@@ -48,40 +48,21 @@ void hidden(lv_obj_t *object, bool value)
 }
 }
 
-bool XiaozhiUi::create(lv_obj_t *parent, ActionCallback action, void *context, bool multiline)
+bool XiaozhiUi::create(lv_obj_t *parent, ActionCallback action, void *context)
 {
-    (void)multiline;
     if (!parent) return false;
     destroy(); _action_callback = action; _context = context;
     _root = box(parent, 0, 0, 240, 320);
-    auto *title = label(_root, "AIChats", 48, 14, 144, &lv_font_montserrat_20);
-    lv_obj_set_style_text_align(title, LV_TEXT_ALIGN_CENTER, 0);
-    auto *back = lv_button_create(_root); plain(back);
-    lv_obj_set_pos(back, 4, 4); lv_obj_set_size(back, 40, 40);
-    auto *arrow = label(back, LV_SYMBOL_LEFT, 0, 0, 28, &lv_font_montserrat_20);
-    lv_obj_center(arrow);
-    lv_obj_add_event_cb(back, onBack, LV_EVENT_CLICKED, this);
-    _network = label(_root, "Offline", 8, 46, 224, &lv_font_montserrat_12);
-    lv_obj_set_style_text_align(_network, LV_TEXT_ALIGN_CENTER, 0);
-    auto *smile = lv_image_create(_root);
-    lv_image_set_src(smile, &emoji_1f642_64);
-    lv_obj_set_pos(smile, 88, 90);
-    _status = label(_root, "Preparing", 8, 178, 224, &font_puhui_16_4);
+    _network = label(_root, "", 212, 10, 24, &lv_font_montserrat_16);
+    _status = label(_root, "Preparing", 28, 10, 180, &font_puhui_16_4);
     lv_obj_set_style_text_align(_status, LV_TEXT_ALIGN_CENTER, 0);
-    auto *hint = label(_root, "Say \"你好小智\"\nor tap Talk.", 8, 216, 224, &font_puhui_16_4);
-    lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
-    _action = lv_button_create(_root); plain(_action);
-    lv_obj_set_pos(_action, 50, 276); lv_obj_set_size(_action, 140, 36);
-    lv_obj_set_style_bg_color(_action, lv_color_hex(0x376df6), 0);
-    lv_obj_set_style_bg_opa(_action, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(_action, 12, 0);
-    _action_label = label(_action, "Talk", 0, 0, 132, &lv_font_montserrat_16);
-    lv_obj_set_style_text_color(_action_label, lv_color_white(), 0);
-    lv_obj_set_style_text_align(_action_label, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_center(_action_label);
+    _action = lv_image_create(_root);
+    lv_image_set_src(_action, &emoji_1f642_64);
+    lv_obj_center(_action);
+    lv_obj_add_flag(_action, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(_action, onAction, LV_EVENT_CLICKED, this);
 
-    _activation = box(_root, 8, 70, 224, 196);
+    _activation = box(_root, 8, 60, 224, 210);
     auto *activation_title = label(_activation, "DEVICE ACTIVATION", 0, 4, 224, &lv_font_montserrat_14);
     lv_obj_set_style_text_align(activation_title, LV_TEXT_ALIGN_CENTER, 0);
     _code = label(_activation, "", 0, 33, 224, &lv_font_montserrat_32);
@@ -96,18 +77,16 @@ void XiaozhiUi::destroy()
 {
     if (_root) lv_obj_delete(_root);
     _root = _network = _status = nullptr;
-    _action = _action_label = nullptr;
+    _action = nullptr;
     _activation = _code = _instruction = nullptr;
 }
-void XiaozhiUi::setNetworkReady(bool ready) { text(_network, ready ? "Wi-Fi " LV_SYMBOL_OK : "Offline"); }
+void XiaozhiUi::setNetworkReady(bool ready) { text(_network, ready ? LV_SYMBOL_WIFI : ""); }
 void XiaozhiUi::setStatus(const char *value) { text(_status, value); }
-void XiaozhiUi::setAction(const char *value, bool enabled)
+void XiaozhiUi::setActionEnabled(bool enabled)
 {
-    text(_action_label, value);
     if (!_action) return;
-    lv_obj_set_style_border_width(_action, enabled ? 2 : 1, 0);
-    if (enabled) lv_obj_remove_state(_action, LV_STATE_DISABLED);
-    else lv_obj_add_state(_action, LV_STATE_DISABLED);
+    if (enabled) lv_obj_add_flag(_action, LV_OBJ_FLAG_CLICKABLE);
+    else lv_obj_remove_flag(_action, LV_OBJ_FLAG_CLICKABLE);
 }
 void XiaozhiUi::setActivation(const char *code, const char *message, bool visible)
 {
@@ -119,10 +98,5 @@ void XiaozhiUi::onAction(lv_event_t *event)
 {
     auto *self = static_cast<XiaozhiUi *>(lv_event_get_user_data(event));
     if (self->_action_callback) self->_action_callback(self->_context);
-}
-void XiaozhiUi::onBack(lv_event_t *event)
-{
-    auto *self = static_cast<XiaozhiUi *>(lv_event_get_user_data(event));
-    if (self->_back_callback) self->_back_callback(self->_context);
 }
 }
