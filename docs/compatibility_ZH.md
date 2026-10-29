@@ -1,0 +1,35 @@
+# 组件与硬件
+
+[English](compatibility.md) | [简体中文](compatibility_ZH.md)
+
+## 板卡与构建配置
+
+开发板采用 ESP32-C6，配置 16 MB Flash，无 PSRAM；Wi-Fi 仅支持 2.4 GHz。框架版本与 Arduino 选项见 [product.json](../.github/product.json)，接线见[原理图](../hardware/schematic/ESP32-C6-Touch-LCD-2.8.pdf)。
+
+## 工程内 BSP
+
+八个 IDF 示例与 [factory 工程](../examples/factory/README_ZH.md)均自带 components 目录，完整复制单个工程即可独立编译。外设独立初始化接口只启动所需总线；factory 使用整体启动入口 `bsp_init()`，音频会话保留在其本地 `bsp_extra` 组件中。
+
+请在单一任务完成外设初始化，再启动工作任务。RTC、IMU、温湿度及电池串口读取不会启动 LCD、音频或 Wi-Fi 任务。CH32V003 驱动创建时会复位其 IO 寄存器，参见[引脚用途](ch32v003_ZH.md)。
+
+## 显示与存储
+
+ST7789 与 microSD 共用 SPI2，使用独立片选。BSP 只初始化一次总线，卸载 SD 不释放该总线；factory 在 LCD 开始通信前先挂载 SD。
+
+LCD 使用两块常驻的 20 行片内 DMA 缓冲，每块 9,600 字节。先创建界面，再调用 `bsp_display_show()` 刷新首帧并开启背光。CST3530 提供触摸坐标，factory 的 Display Test 使用 LVGL 双击检测，不使用 FT6336 手势寄存器。
+
+## 音频与依赖
+
+ES8311 录音与播放共用 BSP 所有的 IN_OUT 句柄。调用 `bsp_audio_deinit()` 前应关闭 codec 并停止工作任务，不要删除借用的句柄。独立音频示例提供实时电平，以及触摸控制的最长 10 秒录音与回放；录音保存在独立 Flash 临时分区，无需 SD 卡或桌面。
+
+IDF 使用 LVGL 9.5.0，Arduino 使用 LVGL 8.4；Arduino 共享驱动位于 `examples/arduino/libraries/board_config`。基础示例和 factory 均使用 [product.json](../.github/product.json) 中列出的 ESP-IDF v5.5.4。
+
+BSP 固定使用 esp_lvgl_adapter 0.4.3~1，匹配当前选定的 v5.5.4；该组件的定时器 API 判断与 IDF 6.0.2 不兼容。后续采用经过验证的组件与 SDK 组合时，再评估解除版本限制。
+
+## 出厂应用内存
+
+Touch Test 使用双色索引画布。10 秒录音使用独立的 512 KB Flash 临时分区，与 SD 文件和设置隔离；下一次录音覆盖上一次。
+
+## 固件
+
+源码更新和本地构建不会替换 [firmware](../firmware/README_ZH.md) 中已实测的镜像。完整桌面应用保留在 factory，基础示例只演示对应外设。

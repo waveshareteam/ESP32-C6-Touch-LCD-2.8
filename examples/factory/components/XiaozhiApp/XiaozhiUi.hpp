@@ -1,0 +1,29 @@
+/* SPDX-FileCopyrightText: 2026 Waveshare
+ * SPDX-License-Identifier: Apache-2.0 */
+#pragma once
+#include "lvgl.h"
+
+namespace esp_brookesia::apps {
+class XiaozhiUi {
+public:
+    using ActionCallback = void (*)(void *);
+    ~XiaozhiUi() { destroy(); }
+    bool preload() { return true; }
+    bool create(lv_obj_t *parent, ActionCallback action, void *context);
+    void destroy();
+    void setNetworkReady(bool ready);
+    void setStatus(const char *status);
+    void setSubtitle(const char *subtitle);
+    void setActionEnabled(bool enabled);
+    void setActivation(const char *code, const char *message, bool visible);
+    lv_obj_t *root() const { return _root; }
+private:
+    lv_obj_t *_root = nullptr, *_network = nullptr, *_status = nullptr;
+    lv_obj_t *_action = nullptr;
+    lv_obj_t *_subtitle_area = nullptr, *_subtitle = nullptr;
+    lv_obj_t *_activation = nullptr, *_code = nullptr, *_instruction = nullptr;
+    ActionCallback _action_callback = nullptr;
+    void *_context = nullptr;
+    static void onAction(lv_event_t *event);
+};
+}

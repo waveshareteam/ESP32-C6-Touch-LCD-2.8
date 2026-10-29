@@ -1,0 +1,63 @@
+/* SPDX-License-Identifier: MIT */
+#pragma once
+#include <array>
+#include <atomic>
+#include <functional>
+#include <string>
+#include <vector>
+#include "esp_wn_iface.h"
+#include "model_path.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+#include "freertos/task.h"
+
+namespace esp_brookesia::apps {
+/** ESP32-C6 single-microphone WakeNet9s. No hardware echo reference is available. */
+class XiaozhiAudioProcessor {
+public:
+    static constexpr uint32_t SAMPLE_RATE = 16000;
+    static constexpr size_t INPUT_CHANNELS = 1;
+    static constexpr size_t PCM_FRAME_SAMPLES = 320;
+    using WakeWordCallback = std::function<void(const std::string &)>;
+    using PcmFrameCallback = std::function<void(const int16_t *, size_t)>;
+    using VadCallback = std::function<void(bool)>;
+    XiaozhiAudioProcessor();
+    ~XiaozhiAudioProcessor();
+    XiaozhiAudioProcessor(const XiaozhiAudioProcessor &) = delete;
+    XiaozhiAudioProcessor &operator=(const XiaozhiAudioProcessor &) = delete;
+    bool initialize();
+    bool shutdown();
+    bool suspendWakeWord();
+    bool resumeWakeWord();
+    bool feed(const int16_t *pcm, size_t frames);
+    bool enableWakeWord(bool enable);
+    bool enableVoiceProcessing(bool enable);
+    bool isReady() const { return ready_.load(); }
+    bool hasWakeWord() const { return wake_available_.load(); }
+    size_t getFeedFrames() const { return 160; }
+    void setWakeWordCallback(WakeWordCallback callback);
+    void setPcmFrameCallback(PcmFrameCallback callback);
+    void setVadCallback(VadCallback callback);
+private:
+    SemaphoreHandle_t lifecycle_mutex_ = nullptr;
+    SemaphoreHandle_t state_mutex_ = nullptr;
+    SemaphoreHandle_t input_mutex_ = nullptr;
+    srmodel_list_t *models_ = nullptr;
+    const esp_wn_iface_t *wake_iface_ = nullptr;
+    model_iface_data_t *wake_data_ = nullptr;
+    std::atomic<bool> ready_{false};
+    std::atomic<bool> stopping_{false};
+    std::atomic<bool> wake_available_{false};
+    bool wake_enabled_ = false;
+    bool voice_enabled_ = false;
+    std::vector<int16_t> wake_chunk_;
+    size_t chunk_fill_ = 0;
+    std::array<int16_t, PCM_FRAME_SAMPLES> voice_frame_{};
+    size_t voice_fill_ = 0;
+    WakeWordCallback wake_callback_;
+    PcmFrameCallback pcm_callback_;
+    VadCallback vad_callback_;
+    bool loadWakeModel();
+    void releaseWakeModel();
+};
+} // namespace esp_brookesia::apps

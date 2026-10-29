@@ -1,0 +1,13 @@
+menu "ESP32-C6 Touch LCD 2.8 BSP"
+    config BSP_ERROR_CHECK
+        bool "Assert on BSP errors"
+        default n
+        help
+            Optional peripherals report errors to their APPs without aborting startup.
+    config BSP_LVGL_TASK_STACK_SIZE
+        int "LVGL task stack size (bytes)"
+        range 8192 32768
+        default 8192
+        help
+            Increase for nested widgets and JPEG decoding in the factory desktop.
+endmenu
