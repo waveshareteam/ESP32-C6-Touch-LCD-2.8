@@ -81,6 +81,7 @@ private:
         AppHidden,
         NetworkChanged,
         ActionPressed,
+        BootPressed,
         AnnounceActivation,
         WakeWord,
         TransportConnected,
@@ -115,8 +116,12 @@ private:
     };
 
     static constexpr int CONTROL_TASK_STACK_SIZE = 12 * 1024;
-    // One preallocated stack serves capture, wake, encode and playback.
-    static constexpr int INPUT_TASK_STACK_SIZE = 24 * 1024;
+    // WakeNet and Opus run in separate phases; reserve the larger stack only
+    // after unloading WakeNet, so standby leaves room for the model budget.
+    static constexpr int WAKE_TASK_STACK_SIZE = 12 * 1024;
+    // Capture, playback and PCM callback buffers live outside the codec stack.
+    // This budget requires CELT-only uplink; SILK encoding can exceed it.
+    static constexpr int INPUT_TASK_STACK_SIZE = 21 * 1024;
     static constexpr size_t AFE_INPUT_CHANNELS = 1;
 
     static XiaozhiApp *_instance;
@@ -139,6 +144,8 @@ private:
 
     TaskHandle_t _control_task = nullptr;
     TaskHandle_t _input_task = nullptr;
+    int _input_task_stack_size = 0;
+    uint32_t _audio_stack_reported_free = 0;
 
     esp_event_handler_instance_t _ip_event_instance = nullptr;
 
@@ -157,6 +164,7 @@ private:
     std::atomic<bool> _audio_session_acquired{false};
     std::atomic<bool> _codec_claimed{false};
     std::atomic<bool> _input_task_running{false};
+    std::atomic<bool> _input_task_stop_requested{false};
     std::atomic<bool> _playback_enabled{false};
     std::atomic<bool> _playback_active{false};
     std::atomic<bool> _capture_enabled{false};
@@ -193,10 +201,15 @@ private:
     ListenMode _listen_mode = ListenMode::None;
     ActivationPhase _activation_phase = ActivationPhase::CheckRequired;
     TickType_t _next_prepare_tick = 0;
+    uint32_t _boot_press_count = 0;
+    bool _boot_button_ready = false;
+    bool _boot_button_armed = false;
 
-    uint8_t *_encoded_frame = nullptr;
+    uint8_t *_encoded_frame = nullptr; // Alias into the Opus workspace tail.
     void *_opus_encoder = nullptr;
     void *_opus_decoder = nullptr;
+    // Encoder/decoder are aliases into this workspace, never active together.
+    void *_opus_workspace = nullptr;
     int _opus_input_size = 0;
     int _opus_output_size = 0;
 
@@ -225,16 +238,22 @@ private:
     void handleControlEvent(const ControlEvent &event);
     void handleAppVisible();
     void handleAppHidden(bool release_audio);
+    void pollBootButton();
+    void handleBootPressed();
     void prepareIfDue();
     void schedulePrepare(uint32_t delay_ms);
     bool prepareChat();
     void destroyChat();
 
     bool ensureAudioReady();
+    bool ensureAudioWorker(int stack_size);
+    void stopAudioWorker();
     bool ensureEncoder();
+    bool ensureOpusWorkspace();
+    void releaseOpusWorkspace();
     void stopEncoder();
-    bool releasePlaybackResources();
-    bool startPlayback();
+    bool releasePlaybackResources(bool keep_queue = false);
+    esp_err_t startPlayback();
     bool shutdownAudio();
     bool releaseAudioSession();
     bool setAudioModes(bool wake_word, bool voice);
@@ -255,6 +274,11 @@ private:
     bool waitForPlaybackIdle(uint32_t timeout_ms) const;
 
     void inputAudio();
+    void captureAudio(int16_t *samples, uint32_t &failures);
+    void captureWakeAudio(uint32_t &failures) __attribute__((noinline));
+    void postAudioWorkerError(ControlEventType type, esp_err_t error, uint32_t chat_generation,
+                              uint32_t turn_generation, const char *detail) __attribute__((noinline));
+    void monitorAudioStack(const char *context) __attribute__((noinline));
     void encodeAudioFrame(const int16_t *pcm, size_t count);
     void playAudio();
 

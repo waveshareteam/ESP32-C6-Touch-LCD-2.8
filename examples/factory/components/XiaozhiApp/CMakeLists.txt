@@ -2,6 +2,7 @@ set(PROJ_SRC ${CMAKE_CURRENT_LIST_DIR})
 
 set(PROJ_SRCS_C
     "../AIChats/assets/img_app_aichats.c"
+    "XiaozhiTlsBuffer.c"
 )
 
 set(PROJ_SRCS_CPP
@@ -35,6 +36,18 @@ idf_component_register(
         mcp-c-sdk
         spi_flash
 )
+
+if(CONFIG_MBEDTLS_DYNAMIC_BUFFER)
+    idf_component_get_property(mbedtls_dir mbedtls COMPONENT_DIR)
+    target_include_directories(${COMPONENT_LIB} PRIVATE
+        "${mbedtls_dir}/mbedtls/library"
+        "${mbedtls_dir}/port/dynamic"
+    )
+    target_link_libraries(${COMPONENT_LIB} INTERFACE
+        "-Wl,--wrap=esp_mbedtls_free_tx_buffer"
+        "-Wl,--undefined=__wrap_esp_mbedtls_free_tx_buffer"
+    )
+endif()
 
 set_source_files_properties(
     ${PROJ_SRCS_CPP} ${PROJ_SRCS_CC}

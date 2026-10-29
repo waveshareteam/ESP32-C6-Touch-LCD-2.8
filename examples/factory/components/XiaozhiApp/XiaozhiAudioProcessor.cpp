@@ -75,12 +75,14 @@ bool XiaozhiAudioProcessor::feed(const int16_t *pcm, size_t frames)
         WakeWordCallback wake_cb;
         PcmFrameCallback pcm_cb;
         std::string word;
-        std::array<int16_t, PCM_FRAME_SAMPLES> frame{};
         bool have_frame = false;
         size_t count = std::min(frames, size_t{160});
         {
             Lock state(state_mutex_);
             if (!wake_enabled_ && !voice_enabled_) return false;
+            // Stop exactly at the frame boundary before delivering the member
+            // buffer. Partial I2S reads must not overwrite its beginning first.
+            if (voice_enabled_) count = std::min(count, PCM_FRAME_SAMPLES - voice_fill_);
             for (size_t i = 0; i < count; ++i) {
                 if (wake_enabled_) {
                     wake_chunk_[chunk_fill_++] = pcm[i];
@@ -99,7 +101,6 @@ bool XiaozhiAudioProcessor::feed(const int16_t *pcm, size_t frames)
                     voice_frame_[voice_fill_++] = pcm[i];
                     if (voice_fill_ == PCM_FRAME_SAMPLES) {
                         voice_fill_ = 0;
-                        frame = voice_frame_;
                         have_frame = true;
                         pcm_cb = pcm_callback_;
                     }
@@ -108,7 +109,9 @@ bool XiaozhiAudioProcessor::feed(const int16_t *pcm, size_t frames)
         }
         // Mode changes wait for this producer before releasing its codec resources.
         if (wake_cb && !stopping_.load()) wake_cb(word);
-        if (have_frame && pcm_cb && !stopping_.load()) pcm_cb(frame.data(), frame.size());
+        // input_mutex_ stays held across the synchronous callback, so mode
+        // changes and subsequent feeds cannot overwrite voice_frame_ here.
+        if (have_frame && pcm_cb && !stopping_.load()) pcm_cb(voice_frame_.data(), voice_frame_.size());
         pcm += count;
         frames -= count;
     }

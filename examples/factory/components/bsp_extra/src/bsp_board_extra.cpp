@@ -166,6 +166,25 @@ esp_err_t bsp_extra_codec_mute_set(bool enable)
     xSemaphoreGive(control_mutex);
     return ret;
 }
+esp_err_t bsp_extra_codec_prepare_playback(void)
+{
+    if (!codec || !control_mutex || !can_access()) return ESP_ERR_INVALID_STATE;
+    xSemaphoreTake(control_mutex, portMAX_DELAY);
+    if (!opened) {
+        xSemaphoreGive(control_mutex);
+        return ESP_ERR_INVALID_STATE;
+    }
+    esp_err_t ret = codec_result(esp_codec_dev_set_out_vol(codec, volume));
+    if (ret == ESP_OK) ret = codec_result(esp_codec_dev_set_out_mute(codec, false));
+    if (ret == ESP_OK) {
+        ret = bsp_board_pa_set(true);
+        pa_enabled.store(ret == ESP_OK);
+    }
+    ESP_LOGI(TAG, "Playback output: volume=%d, PA=%d, result=%s",
+             volume, pa_enabled.load(), esp_err_to_name(ret));
+    xSemaphoreGive(control_mutex);
+    return ret;
+}
 esp_err_t bsp_extra_codec_dev_stop(void)
 {
     if (!codec || !can_access()) return ESP_ERR_INVALID_STATE;

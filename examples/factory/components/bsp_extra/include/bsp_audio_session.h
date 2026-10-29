@@ -31,6 +31,8 @@ const char *bsp_extra_audio_owner_name(bsp_extra_audio_owner_t owner);
 
 /* Mute requires an open session. */
 esp_err_t bsp_extra_codec_mute_set(bool enable);
+/* Reapply cached volume, unmute DAC and enable PA without reopening I2S. */
+esp_err_t bsp_extra_codec_prepare_playback(void);
 /* Volume: 0..100; cached while closed. volume_set may be NULL. */
 esp_err_t bsp_extra_codec_volume_set(int volume, int *volume_set);
 int bsp_extra_codec_volume_get(void);
