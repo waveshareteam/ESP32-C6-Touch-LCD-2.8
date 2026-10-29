@@ -6,6 +6,7 @@ managed_components/
 dependencies.lock
 compile_commands.json
 sdkconfig.old
+/examples/esp-idf/*/sdkconfig
 
 # Editor files
 .vscode/

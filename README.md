@@ -36,12 +36,12 @@ Examples and hardware resources for the ESP32-C6 touch display board, including 
 
 ## 📦 Quick Start
 
-1. Download and extract this repository, then connect the board with a USB data cable.
-2. To run the current desktop, follow the [ESP-IDF setup guide](docs/getting-started-idf.md) and open `examples/factory`.
-3. Run `idf.py build`, then `idf.py flash monitor`; the project already selects ESP32-C6 and 16 MB Flash.
+1. Download the newest file whose name contains `FactoryOnly` from the [`firmware`](firmware/) folder.
+2. Connect the board with a USB data cable and follow the [firmware flashing instructions](firmware/README.md). No source compilation is required.
+3. Reset the board after flashing to open the desktop.
 4. Follow the [factory user guide](examples/factory/USER_GUIDE.md) to connect **2.4 GHz Wi-Fi** and try the applications.
 
-The preserved [original factory image](firmware/README.md) restores the previous demonstration.
+To build or modify an example, follow the [ESP-IDF setup guide](docs/getting-started-idf.md) or [Arduino setup guide](docs/getting-started-arduino.md).
 
 ## 🧪 Examples
 

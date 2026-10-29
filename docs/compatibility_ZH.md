@@ -8,7 +8,7 @@
 
 ## 工程内 BSP
 
-八个 IDF 示例与 [factory 工程](../examples/factory/README_ZH.md)均按照 C5-3.5 的目录结构，自带 components 目录。各工程的 BSP 接口及驱动保持一致，完整复制单个工程即可独立编译。外设独立初始化接口只启动所需总线；factory 使用整体启动入口 `bsp_init()`，音频会话保留在其本地 `bsp_extra` 组件中。
+八个 IDF 示例与 [factory 工程](../examples/factory/README_ZH.md)均自带 components 目录，完整复制单个工程即可独立编译。外设独立初始化接口只启动所需总线；factory 使用整体启动入口 `bsp_init()`，音频会话保留在其本地 `bsp_extra` 组件中。
 
 请在单一任务完成外设初始化，再启动工作任务。RTC、IMU、温湿度及电池串口读取不会启动 LCD、音频或 Wi-Fi 任务。CH32V003 驱动创建时会复位其 IO 寄存器，参见[引脚用途](ch32v003_ZH.md)。
 
@@ -20,9 +20,9 @@ LCD 使用两块常驻的 20 行片内 DMA 缓冲，每块 9,600 字节。先创
 
 ## 音频与依赖
 
-ES8311 录音与播放共用 BSP 所有的 IN_OUT 句柄。调用 `bsp_audio_deinit()` 前应关闭 codec 并停止工作任务，不要删除借用的句柄。独立音频示例复用出厂 Mic Test 及本工程的音频会话适配，提供实时电平、触摸控制的通过独立 Flash 临时分区保存的最长 10 秒录音及回放，无需 SD 卡或桌面。
+ES8311 录音与播放共用 BSP 所有的 IN_OUT 句柄。调用 `bsp_audio_deinit()` 前应关闭 codec 并停止工作任务，不要删除借用的句柄。独立音频示例提供实时电平，以及触摸控制的最长 10 秒录音与回放；录音保存在独立 Flash 临时分区，无需 SD 卡或桌面。
 
-IDF 使用 LVGL 9.5.0，Arduino 保留 LVGL 8.4；Arduino 共享驱动位于 `examples/arduino/libraries/board_config`。保留本地 CST3530/SHTC3 适配及托管驱动 1.x 接口。基础示例和 factory 均使用 ESP-IDF v5.5.4，与 C5-3.5 工程保持一致。
+IDF 使用 LVGL 9.5.0，Arduino 使用 LVGL 8.4；Arduino 共享驱动位于 `examples/arduino/libraries/board_config`。基础示例和 factory 均使用 [product.json](../.github/product.json) 中列出的 ESP-IDF v5.5.4。
 
 BSP 固定使用 esp_lvgl_adapter 0.4.3~1，匹配当前选定的 v5.5.4；该组件的定时器 API 判断与 IDF 6.0.2 不兼容。后续采用经过验证的组件与 SDK 组合时，再评估解除版本限制。
 

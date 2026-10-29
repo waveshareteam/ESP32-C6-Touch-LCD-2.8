@@ -22,11 +22,10 @@ Open the example's `.ino` file, connect the board with a USB data cable, and sel
 | Board | ESP32C6 Dev Module |
 | Flash Size | 16 MB |
 | Flash Mode | QIO |
-| PSRAM | Not supported |
 | Partition Scheme | 16M Flash (3MB APP/9.9MB FATFS) |
 | Port | The connected board's serial port |
 
-These options match the board's 16 MB Flash configuration.
+These options match the board's 16 MB Flash configuration. ESP32-C6 has no PSRAM; no PSRAM option is needed.
 
 ## Upload and Observe
 

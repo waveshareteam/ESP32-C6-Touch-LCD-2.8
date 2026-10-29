@@ -12,7 +12,7 @@ ESP32-C6-Touch-LCD-2.8 and a USB data cable. Connect a speaker for audio; prepar
 
 ## How to Run
 
-1. To use the current desktop, follow the [ESP-IDF guide](../../docs/getting-started-idf.md) and run `idf.py build` followed by `idf.py flash monitor` in this folder; the factory monitor uses **2,000,000 baud**.
+1. Download and flash the latest image from [Factory Firmware](../../firmware/README.md). To build from source, follow the [ESP-IDF guide](../../docs/getting-started-idf.md), then run `idf.py build` and `idf.py flash monitor` in this folder; the factory monitor uses **2,000,000 baud**.
 2. Swipe left/right to change desktop pages and tap an app to open it. Swipe up from the bottom center to return; in Display Test, double-tap anywhere to exit.
 3. Open **Settings → Wi-Fi setup** and follow the [Wi-Fi steps](USER_GUIDE.md#connecting-wi-fi) before using online apps. For Music, place MP3 files in the card's `/music` folder, then insert the card before power-on.
 

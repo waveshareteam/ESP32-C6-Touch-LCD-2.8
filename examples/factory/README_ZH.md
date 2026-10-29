@@ -12,7 +12,7 @@ ESP32-C6-Touch-LCD-2.8 开发板和 USB 数据线；声音功能需要扬声器�
 
 ## 怎么运行
 
-1. 按 [ESP-IDF 入门说明](../../docs/getting-started-idf_ZH.md)准备环境，在本目录依次执行 `idf.py build` 和 `idf.py flash monitor`，出厂工程监视器为 **2,000,000 波特率**；`firmware/` 中保留的[原版固件](../../firmware/README_ZH.md)用于恢复旧演示。
+1. 下载并烧录[出厂固件](../../firmware/README_ZH.md)中的最新镜像。如需从源码编译，按 [ESP-IDF 入门说明](../../docs/getting-started-idf_ZH.md)准备环境，在本目录依次执行 `idf.py build` 和 `idf.py flash monitor`；出厂工程监视器为 **2,000,000 波特率**。
 2. 左右滑动桌面翻页，点击图标进入应用；从底部中间向上滑动返回桌面，Display Test 则在屏幕任意位置双击退出。
 3. 使用在线功能前，打开 **Settings → Wi-Fi setup**，按[配网步骤](USER_GUIDE_ZH.md#连接-wi-fi)联网；使用音乐时，在 SD 卡根目录建立 `/music` 放 MP3，上电前插卡。
 

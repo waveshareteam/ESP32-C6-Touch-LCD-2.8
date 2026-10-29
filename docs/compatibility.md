@@ -8,7 +8,7 @@ The board uses ESP32-C6 with 16 MB Flash and no PSRAM. Wi-Fi supports 2.4 GHz on
 
 ## Project-local BSP
 
-The eight IDF examples and [factory project](../examples/factory/) each include their own components directory, following the C5-3.5 project layout. Their BSP interfaces and drivers match; each project can be copied and built independently. Each peripheral initializer starts only its required bus, while factory uses aggregate `bsp_init()` and its local `bsp_extra` audio-session component.
+The eight IDF examples and [factory project](../examples/factory/) each include their own components directory, so each project can be copied and built independently. Each peripheral initializer starts only its required bus, while factory uses aggregate `bsp_init()` and its local `bsp_extra` audio-session component.
 
 Initialize peripherals from one task before starting workers. RTC, IMU, environment and battery serial reads do not start LCD, audio or Wi-Fi tasks. The CH32V003 driver's initial register reset is part of expander creation; see [pin purposes](ch32v003.md).
 
@@ -22,7 +22,7 @@ LCD uses two persistent 20-row internal DMA buffers (9,600 bytes each). Create t
 
 ES8311 capture and playback share one BSP-owned IN_OUT codec. Close the codec and stop workers before `bsp_audio_deinit()`; callers must not delete borrowed handles. The standalone Audio example reuses factory Mic Test and its project-local audio-session adapter, with live level display and up to 10 seconds of touchscreen-controlled recording/playback using a dedicated Flash scratch partition; no SD card or desktop is required.
 
-IDF uses LVGL 9.5.0 and Arduino retains LVGL 8.4. Shared Arduino board drivers reside in `examples/arduino/libraries/board_config`. Local CST3530/SHTC3 adaptations and managed 1.x driver APIs are retained. Build the basic examples and factory with ESP-IDF v5.5.4, matching the C5-3.5 projects.
+IDF uses LVGL 9.5.0 and Arduino uses LVGL 8.4. Shared Arduino board drivers reside in `examples/arduino/libraries/board_config`. Build the basic examples and factory with ESP-IDF v5.5.4, as listed in [product.json](../.github/product.json).
 
 The BSP pins esp_lvgl_adapter to 0.4.3~1 for the selected v5.5.4 build; its timer API check is incompatible with IDF 6.0.2. Revisit the pin when adopting a tested adapter and SDK combination.
 

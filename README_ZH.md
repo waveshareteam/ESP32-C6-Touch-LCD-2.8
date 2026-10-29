@@ -36,12 +36,12 @@
 
 ## 📦 快速开始
 
-1. 下载并解压本仓库，用 USB 数据线连接开发板。
-2. 运行当前桌面时，先按 [ESP-IDF 环境说明](docs/getting-started-idf_ZH.md)准备环境，再打开 `examples/factory`。
-3. 执行 `idf.py build`，然后执行 `idf.py flash monitor`；工程已默认选择 ESP32-C6 和 16 MB Flash。
+1. 在 [`firmware`](firmware/) 目录下载文件名包含 `FactoryOnly` 且日期最新的固件。
+2. 用 USB 数据线连接开发板，按[固件烧录说明](firmware/README_ZH.md)操作，无需编译源码。
+3. 烧录后按 RESET（复位），进入应用桌面。
 4. 参照[出厂应用说明](examples/factory/USER_GUIDE_ZH.md)连接 **2.4 GHz Wi-Fi**，体验各应用。
 
-保留的[原版出厂固件](firmware/README_ZH.md)用于恢复旧版演示。
+如需编译或修改示例，请查看 [ESP-IDF 环境说明](docs/getting-started-idf_ZH.md)或 [Arduino 环境说明](docs/getting-started-arduino_ZH.md)。
 
 ## 🧪 示例
 

@@ -22,11 +22,10 @@
 | 开发板 Board | ESP32C6 Dev Module |
 | Flash Size | 16 MB |
 | Flash Mode | QIO |
-| PSRAM | Not supported |
 | Partition Scheme | 16M Flash (3MB APP/9.9MB FATFS) |
 | 端口 Port | 当前连接的开发板串口 |
 
-以上选项与开发板的 16 MB Flash 配置一致。
+以上选项与开发板的 16 MB Flash 配置一致。ESP32-C6 无 PSRAM，无需设置 PSRAM 选项。
 
 ## 上传与查看结果
 
